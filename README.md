@@ -97,9 +97,13 @@ go run main.go
 またはビルドして実行：
 
 ```bash
-go build -o unisonair-speed-tracker.exe
+go build -ldflags="-H windowsgui" -o unisonair-speed-tracker.exe
 ./unisonair-speed-tracker.exe
 ```
+
+**ビルドオプション説明**:
+- `-ldflags="-H windowsgui"`: Windowsでコンソールウィンドウを非表示化
+- `-o unisonair-speed-tracker.exe`: 出力ファイル名を指定
 
 ### GUI操作手順
 
