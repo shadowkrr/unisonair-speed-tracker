@@ -1,0 +1,53 @@
+# Environment variables and sensitive data
+.env
+*.env
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Screenshot and generated data
+res/*/screenshot/*.png
+res/*/json/*.json
+res/*/csv/*.csv
+
+# Configuration files with sensitive data (but keep template)
+config.json
+
+# Keep directory structure but ignore contents
+res/*/screenshot/*
+!res/*/screenshot/.gitkeep
+res/*/json/*
+!res/*/json/.gitkeep
+res/*/csv/*
+!res/*/csv/.gitkeep
