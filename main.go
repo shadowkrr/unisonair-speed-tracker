@@ -16,8 +16,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -54,6 +56,87 @@ type Screenshot struct {
 	Region     image.Rectangle
 	WebhookURL string
 	BasePath   string
+}
+
+// Windows API constants for sleep prevention
+const (
+	ES_SYSTEM_REQUIRED  = 0x00000001
+	ES_DISPLAY_REQUIRED = 0x00000002
+	ES_CONTINUOUS       = 0x80000000
+)
+
+// NoSleep manager for preventing system sleep and screen off
+type NoSleepManager struct {
+	isActive      bool
+	preventScreen bool
+	kernel32      *syscall.LazyDLL
+	setThreadExec *syscall.LazyProc
+}
+
+// NewNoSleepManager creates a new NoSleep manager
+func NewNoSleepManager() *NoSleepManager {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	setThreadExec := kernel32.NewProc("SetThreadExecutionState")
+	
+	return &NoSleepManager{
+		kernel32:      kernel32,
+		setThreadExec: setThreadExec,
+	}
+}
+
+// Start prevents system sleep and optionally screen off
+func (ns *NoSleepManager) Start(preventScreenOff bool) error {
+	if ns == nil || runtime.GOOS != "windows" {
+		return fmt.Errorf("NoSleep is only supported on Windows")
+	}
+	
+	if ns.isActive {
+		return nil
+	}
+	
+	flags := ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+	if preventScreenOff {
+		flags |= ES_DISPLAY_REQUIRED
+		ns.preventScreen = true
+	}
+	
+	ret, _, err := ns.setThreadExec.Call(uintptr(flags))
+	if ret == 0 {
+		return fmt.Errorf("failed to set thread execution state: %v", err)
+	}
+	
+	ns.isActive = true
+	return nil
+}
+
+// Stop restores normal sleep behavior
+func (ns *NoSleepManager) Stop() error {
+	if ns == nil || !ns.isActive {
+		return nil
+	}
+	
+	ret, _, err := ns.setThreadExec.Call(uintptr(ES_CONTINUOUS))
+	if ret == 0 {
+		return fmt.Errorf("failed to restore thread execution state: %v", err)
+	}
+	
+	ns.isActive = false
+	ns.preventScreen = false
+	return nil
+}
+
+// IsActive returns whether NoSleep is currently active
+func (ns *NoSleepManager) IsActive() bool {
+	return ns != nil && ns.isActive
+}
+
+// IsPreventing returns whether screen-off prevention is active
+func (ns *NoSleepManager) IsPreventingScreen() bool {
+	return ns != nil && ns.preventScreen
 }
 
 func NewScreenshot(index string, x, y, width, height int, webhookURL string) *Screenshot {
@@ -595,6 +678,7 @@ type GUI struct {
 	region2Entry      *widget.Entry
 	region3Entry      *widget.Entry
 	region4Entry      *widget.Entry
+	noSleepManager    *NoSleepManager
 }
 
 func getScreenDimensions() (int, int, int, int) {
@@ -617,10 +701,11 @@ func NewGUI() *GUI {
 	logBinding.Set("Application started\n")
 
 	gui := &GUI{
-		app:           myApp,
-		window:        myWindow,
-		statusBinding: statusBinding,
-		logBinding:    logBinding,
+		app:            myApp,
+		window:         myWindow,
+		statusBinding:  statusBinding,
+		logBinding:     logBinding,
+		noSleepManager: NewNoSleepManager(),
 	}
 
 	return gui
@@ -799,6 +884,13 @@ func (g *GUI) startScreenshot() {
 	g.statusBinding.Set(fmt.Sprintf("Running (at minutes: %v)", desiredMinutes))
 	g.addLog("Screenshot process started")
 
+	// Start sleep prevention (always enabled with screen off prevention)
+	if err := g.noSleepManager.Start(true); err != nil {
+		g.addLog(fmt.Sprintf("Warning: Failed to enable sleep prevention: %v", err))
+	} else {
+		g.addLog("Sleep prevention enabled (including screen off)")
+	}
+
 	// Update environment variables with current GUI values
 	g.updateEnvironmentVariables()
 	
@@ -821,6 +913,15 @@ func (g *GUI) stopScreenshot() {
 	g.isRunning = false
 	if g.cancel != nil {
 		g.cancel()
+	}
+
+	// Stop sleep prevention
+	if g.noSleepManager.IsActive() {
+		if err := g.noSleepManager.Stop(); err != nil {
+			g.addLog(fmt.Sprintf("Warning: Failed to disable sleep prevention: %v", err))
+		} else {
+			g.addLog("Sleep prevention disabled")
+		}
 	}
 
 	g.statusBinding.Set("Stopped")
@@ -1079,7 +1180,7 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 			// Calculate scale factor (ImageFillContain scales to fit inside while preserving aspect ratio)
 			scaleX := imageDisplaySize.Width / screenWidth
 			scaleY := imageDisplaySize.Height / screenHeight
-			scale := max(scaleX, scaleY) // Use larger scale to ensure image fits inside
+			scale := min(scaleX, scaleY) // Use smaller scale for ImageFillContain
 			
 			// Calculate the actual displayed image size
 			actualImageWidth := screenWidth * scale
@@ -1190,7 +1291,7 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 				// Calculate scale factor (ImageFillContain scales to fit inside while preserving aspect ratio)
 				scaleX := imageDisplaySize.Width / screenWidth
 				scaleY := imageDisplaySize.Height / screenHeight
-				scale := max(scaleX, scaleY) // Use larger scale to ensure image fits inside
+				scale := min(scaleX, scaleY) // Use smaller scale for ImageFillContain
 				
 				// Calculate the actual displayed image size
 				actualImageWidth := screenWidth * scale
@@ -1231,7 +1332,7 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 				// Calculate scale factor (ImageFillContain scales to fit inside while preserving aspect ratio)
 				scaleX := imageDisplaySize.Width / screenWidth
 				scaleY := imageDisplaySize.Height / screenHeight
-				scale := max(scaleX, scaleY) // Use larger scale to ensure image fits inside
+				scale := min(scaleX, scaleY) // Use smaller scale for ImageFillContain
 				
 				// Calculate the actual displayed image size
 				actualImageWidth := screenWidth * scale
