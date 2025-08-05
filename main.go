@@ -14,6 +14,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -29,6 +30,7 @@ import (
 	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/google/generative-ai-go/genai"
 	"github.com/joho/godotenv"
@@ -137,6 +139,30 @@ func (ns *NoSleepManager) IsActive() bool {
 // IsPreventing returns whether screen-off prevention is active
 func (ns *NoSleepManager) IsPreventingScreen() bool {
 	return ns != nil && ns.preventScreen
+}
+
+// Custom theme with Japanese font support
+type customTheme struct {
+	fontResource fyne.Resource
+}
+
+func (t *customTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	return theme.DefaultTheme().Color(name, variant)
+}
+
+func (t *customTheme) Font(style fyne.TextStyle) fyne.Resource {
+	if t.fontResource != nil {
+		return t.fontResource
+	}
+	return theme.DefaultTheme().Font(style)
+}
+
+func (t *customTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return theme.DefaultTheme().Icon(name)
+}
+
+func (t *customTheme) Size(name fyne.ThemeSizeName) float32 {
+	return theme.DefaultTheme().Size(name)
 }
 
 func NewScreenshot(index string, x, y, width, height int, webhookURL string) *Screenshot {
@@ -305,7 +331,7 @@ func sendDiscordWebhook(webhookURL, username, content, imagePath string) error {
 	return nil
 }
 
-func (s *Screenshot) Process(ctx context.Context, genaiClient *genai.Client, config *Config, now time.Time) error {
+func (s *Screenshot) Process(ctx context.Context, genaiClient *genai.Client, config *Config, now time.Time, gui *GUI) error {
 	fileName := now.Format("200601021504") + ".png"
 	imagePath := filepath.Join(s.BasePath, "screenshot", fileName)
 	
@@ -375,6 +401,11 @@ func (s *Screenshot) Process(ctx context.Context, genaiClient *genai.Client, con
 				// Save CSV data
 				if err := s.saveCSV(datas); err != nil {
 					fmt.Printf("Failed to save CSV: %v\n", err)
+				}
+
+				// Update GUI with latest data
+				if gui != nil {
+					gui.loadRegionData(s.Index)
 				}
 			}
 		}
@@ -557,7 +588,30 @@ func (s *Screenshot) saveCSV(datas map[string][]RankingEntry) error {
 	return nil
 }
 
-func worker(ctx context.Context) error {
+func isRegionEnabled(regionIndex int, gui *GUI) bool {
+	if gui == nil {
+		return true // Default to enabled if no GUI
+	}
+	
+	switch regionIndex {
+	case 1:
+		return gui.region1EnableCheck.Checked
+	case 2:
+		return gui.region2EnableCheck.Checked
+	case 3:
+		return gui.region3EnableCheck.Checked
+	case 4:
+		return gui.region4EnableCheck.Checked
+	case 5:
+		return gui.region5EnableCheck.Checked
+	case 6:
+		return gui.region6EnableCheck.Checked
+	default:
+		return true // Region 0 or unknown regions are always enabled
+	}
+}
+
+func worker(ctx context.Context, gui *GUI) error {
 	// Load environment variables from .env file
 	if err := godotenv.Load(); err != nil {
 		log.Printf("Warning: .env file not found: %v", err)
@@ -591,14 +645,23 @@ func worker(ctx context.Context) error {
 	fmt.Printf("worker %v\n", now)
 
 	// Execute screenshot processing
-	screenshots := make([]*Screenshot, 0, 5)
+	screenshots := make([]*Screenshot, 0, 7)
 	
 	// Load regions from environment variables
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 7; i++ {
 		regionStr := os.Getenv(fmt.Sprintf("REGION_%d", i))
 		if regionStr == "" {
 			fmt.Printf("Region %d not set in environment\n", i)
 			continue
+		}
+		
+		// Check if region is enabled (skip check for region 0 - always enabled)
+		if i > 0 && gui != nil {
+			enabled := isRegionEnabled(i, gui)
+			if !enabled {
+				fmt.Printf("Region %d is disabled, skipping\n", i)
+				continue
+			}
 		}
 		
 		fmt.Printf("Loading REGION_%d: %s\n", i, regionStr)
@@ -616,7 +679,7 @@ func worker(ctx context.Context) error {
 	
 
 	for _, shot := range screenshots {
-		if err := shot.Process(ctx, client, config, now); err != nil {
+		if err := shot.Process(ctx, client, config, now, gui); err != nil {
 			fmt.Printf("Error in shot%s: %v\n", shot.Index, err)
 		}
 	}
@@ -651,7 +714,7 @@ func mainLoop(ctx context.Context, desiredMinutes []int) {
 
 		time.Sleep(waitTime)
 
-		if err := worker(ctx); err != nil {
+		if err := worker(ctx, nil); err != nil {
 			log.Printf("Worker error: %v", err)
 		}
 	}
@@ -673,12 +736,30 @@ type GUI struct {
 	webhook2Entry     *widget.Entry
 	webhook3Entry     *widget.Entry
 	webhook4Entry     *widget.Entry
+	webhook5Entry     *widget.Entry
+	webhook6Entry     *widget.Entry
 	region0Entry      *widget.Entry
 	region1Entry      *widget.Entry
 	region2Entry      *widget.Entry
 	region3Entry      *widget.Entry
 	region4Entry      *widget.Entry
+	region5Entry      *widget.Entry
+	region6Entry      *widget.Entry
 	noSleepManager    *NoSleepManager
+	regionTabs        *container.AppTabs
+	regionDataBindings map[string]binding.String
+	region1EnableCheck *widget.Check
+	region2EnableCheck *widget.Check
+	region3EnableCheck *widget.Check
+	region4EnableCheck *widget.Check
+	region5EnableCheck *widget.Check
+	region6EnableCheck *widget.Check
+	region1NameEntry   *widget.Entry
+	region2NameEntry   *widget.Entry
+	region3NameEntry   *widget.Entry
+	region4NameEntry   *widget.Entry
+	region5NameEntry   *widget.Entry
+	region6NameEntry   *widget.Entry
 }
 
 func getScreenDimensions() (int, int, int, int) {
@@ -690,6 +771,11 @@ func getScreenDimensions() (int, int, int, int) {
 func NewGUI() *GUI {
 	myApp := app.New()
 	myApp.SetIcon(nil)
+	
+	// Load Japanese font if available
+	if fontResource, err := fyne.LoadResourceFromPath("NotoSansJP-Medium.ttf"); err == nil {
+		myApp.Settings().SetTheme(&customTheme{fontResource: fontResource})
+	}
 
 	myWindow := myApp.NewWindow("UNI'S ON AIR Speed Tracker")
 	myWindow.Resize(fyne.NewSize(1400, 600))
@@ -700,12 +786,22 @@ func NewGUI() *GUI {
 	logBinding := binding.NewString()
 	logBinding.Set("Application started\n")
 
+	// Create data bindings for each region
+	regionDataBindings := make(map[string]binding.String)
+	for i := 1; i <= 6; i++ {
+		regionKey := fmt.Sprintf("region_%d", i)
+		binding := binding.NewString()
+		binding.Set("No data available")
+		regionDataBindings[regionKey] = binding
+	}
+
 	gui := &GUI{
-		app:            myApp,
-		window:         myWindow,
-		statusBinding:  statusBinding,
-		logBinding:     logBinding,
-		noSleepManager: NewNoSleepManager(),
+		app:                myApp,
+		window:             myWindow,
+		statusBinding:      statusBinding,
+		logBinding:         logBinding,
+		regionDataBindings: regionDataBindings,
+		noSleepManager:     NewNoSleepManager(),
 	}
 
 	return gui
@@ -716,6 +812,267 @@ func (g *GUI) addLog(message string) {
 	timestamp := time.Now().Format("15:04:05")
 	newMessage := fmt.Sprintf("[%s] %s\n", timestamp, message)
 	g.logBinding.Set(current + newMessage)
+}
+
+func (g *GUI) getRegionName(regionIndex string) string {
+	switch regionIndex {
+	case "1":
+		if g.region1NameEntry != nil && g.region1NameEntry.Text != "" {
+			return g.region1NameEntry.Text
+		}
+		return "Region 1"
+	case "2":
+		if g.region2NameEntry != nil && g.region2NameEntry.Text != "" {
+			return g.region2NameEntry.Text
+		}
+		return "Region 2"
+	case "3":
+		if g.region3NameEntry != nil && g.region3NameEntry.Text != "" {
+			return g.region3NameEntry.Text
+		}
+		return "Region 3"
+	case "4":
+		if g.region4NameEntry != nil && g.region4NameEntry.Text != "" {
+			return g.region4NameEntry.Text
+		}
+		return "Region 4"
+	case "5":
+		if g.region5NameEntry != nil && g.region5NameEntry.Text != "" {
+			return g.region5NameEntry.Text
+		}
+		return "Region 5"
+	case "6":
+		if g.region6NameEntry != nil && g.region6NameEntry.Text != "" {
+			return g.region6NameEntry.Text
+		}
+		return "Region 6"
+	default:
+		return fmt.Sprintf("Region %s", regionIndex)
+	}
+}
+
+func (g *GUI) updateRegionTabNames() {
+	if g.regionTabs == nil {
+		return
+	}
+	
+	// Update tab names for regions 1-4
+	for i := 0; i < len(g.regionTabs.Items); i++ {
+		regionIndex := strconv.Itoa(i + 1)
+		newTabName := g.getRegionName(regionIndex)
+		g.regionTabs.Items[i].Text = newTabName
+	}
+	
+	// Refresh the tabs display
+	g.regionTabs.Refresh()
+}
+
+func (g *GUI) loadRegionData(regionIndex string) {
+	regionKey := fmt.Sprintf("region_%s", regionIndex)
+	binding, exists := g.regionDataBindings[regionKey]
+	if !exists {
+		return
+	}
+
+	// Load data from JSON file
+	jsonPath := filepath.Join("res", regionIndex, "json", "datas.json")
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		binding.Set(fmt.Sprintf("No data file found for Region %s\n\n*Path: %s*", regionIndex, jsonPath))
+		return
+	}
+
+	var datas map[string][]RankingEntry
+	if err := json.Unmarshal(data, &datas); err != nil {
+		binding.Set(fmt.Sprintf("Error reading data file for Region %s: %v", regionIndex, err))
+		return
+	}
+
+	if len(datas) == 0 {
+		binding.Set(fmt.Sprintf("No ranking data available for Region %s", regionIndex))
+		return
+	}
+
+	// Get the latest timestamp
+	var latestTime string
+	for timestamp := range datas {
+		if timestamp > latestTime {
+			latestTime = timestamp
+		}
+	}
+
+	ranking := datas[latestTime]
+	if len(ranking) == 0 {
+		binding.Set(fmt.Sprintf("No ranking entries for Region %s", regionIndex))
+		return
+	}
+
+	// Parse timestamp for display
+	parsedTime, err := time.Parse("2006010215", latestTime)
+	var timeDisplay string
+	if err != nil {
+		timeDisplay = latestTime
+	} else {
+		timeDisplay = parsedTime.Format("2006/01/02 15:04")
+	}
+
+	// Format content
+	var content strings.Builder
+	content.WriteString(fmt.Sprintf("## 🏆 %s Ranking\n", g.getRegionName(regionIndex)))
+	content.WriteString(fmt.Sprintf("*Updated: %s*\n\n", timeDisplay))
+
+	// Show all players (up to 20)
+	maxDisplay := 20
+	if len(ranking) < maxDisplay {
+		maxDisplay = len(ranking)
+	}
+
+	for i := 0; i < maxDisplay; i++ {
+		entry := ranking[i]
+		rank := i + 1
+
+		// Calculate point differences for different time periods
+		ptDiffs := g.calculatePointDifferences(datas, latestTime, entry.Name, entry.PT)
+
+		// Format like the original Python version
+		content.WriteString(fmt.Sprintf("%d. %-20s %12s\n", rank, entry.Name, entry.PT))
+		content.WriteString(fmt.Sprintf("   1h:%12s 6h:%12s\n", 
+			formatPointDiff(ptDiffs["1h"]),
+			formatPointDiff(ptDiffs["6h"])))
+		content.WriteString(fmt.Sprintf("  12h:%12s 24h:%12s\n\n", 
+			formatPointDiff(ptDiffs["12h"]),
+			formatPointDiff(ptDiffs["24h"])))
+	}
+
+	if len(ranking) > maxDisplay {
+		content.WriteString(fmt.Sprintf("\n*...and %d more players*", len(ranking)-maxDisplay))
+	}
+
+	binding.Set(content.String())
+}
+
+func (g *GUI) refreshAllRegionData() {
+	for i := 1; i <= 6; i++ {
+		g.loadRegionData(strconv.Itoa(i))
+	}
+}
+
+func (g *GUI) openConfigFile() {
+	configPath := "config.json"
+	
+	// Create config.json if it doesn't exist
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		config, err := loadConfig()
+		if err != nil {
+			g.addLog(fmt.Sprintf("Failed to create config.json: %v", err))
+			return
+		}
+		
+		data, err := json.MarshalIndent(config, "", "    ")
+		if err != nil {
+			g.addLog(fmt.Sprintf("Failed to marshal config: %v", err))
+			return
+		}
+		
+		if err := os.WriteFile(configPath, data, 0644); err != nil {
+			g.addLog(fmt.Sprintf("Failed to write config.json: %v", err))
+			return
+		}
+		g.addLog("Created config.json with default settings")
+	}
+	
+	// Open the file with default system editor
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		// Use cmd /c start to open with default application
+		cmd = exec.Command("cmd", "/c", "start", "", configPath)
+	case "darwin":
+		cmd = exec.Command("open", configPath)
+	case "linux":
+		cmd = exec.Command("xdg-open", configPath)
+	default:
+		g.addLog("Unsupported operating system for opening files")
+		return
+	}
+	
+	if err := cmd.Start(); err != nil {
+		g.addLog(fmt.Sprintf("Failed to open config.json: %v", err))
+	} else {
+		g.addLog("Opened config.json in default editor")
+	}
+}
+
+func (g *GUI) openRegionFile(regionIndex, fileType, fileName string) {
+	filePath := filepath.Join("res", regionIndex, fileType, fileName)
+	
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		g.addLog(fmt.Sprintf("File not found: %s", filePath))
+		return
+	}
+	
+	// Open the file with default system application
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		// Use cmd /c start to open with default application
+		cmd = exec.Command("cmd", "/c", "start", "", filePath)
+	case "darwin":
+		cmd = exec.Command("open", filePath)
+	case "linux":
+		cmd = exec.Command("xdg-open", filePath)
+	default:
+		g.addLog("Unsupported operating system for opening files")
+		return
+	}
+	
+	if err := cmd.Start(); err != nil {
+		g.addLog(fmt.Sprintf("Failed to open %s: %v", filePath, err))
+	} else {
+		g.addLog(fmt.Sprintf("Opened %s in default editor", filePath))
+	}
+}
+
+func (g *GUI) calculatePointDifferences(datas map[string][]RankingEntry, currentTime, name, currentPt string) map[string]int {
+	ptDiffs := make(map[string]int)
+	periods := map[string]int{
+		"1h":  1,
+		"6h":  6,
+		"12h": 12,
+		"24h": 24,
+	}
+
+	// Parse current time
+	currentTimeObj, err := time.Parse("2006010215", currentTime)
+	if err != nil {
+		// If parsing fails, return zeros
+		for period := range periods {
+			ptDiffs[period] = 0
+		}
+		return ptDiffs
+	}
+
+	currentPtInt, _ := strconv.Atoi(strings.ReplaceAll(currentPt, ",", ""))
+
+	for period, hours := range periods {
+		pastTime := currentTimeObj.Add(time.Duration(-hours) * time.Hour)
+		pastTimeKey := pastTime.Format("2006010215")
+		
+		if pastData, exists := datas[pastTimeKey]; exists {
+			for _, entry := range pastData {
+				if entry.Name == name {
+					pastPtInt, _ := strconv.Atoi(strings.ReplaceAll(entry.PT, ",", ""))
+					ptDiffs[period] = currentPtInt - pastPtInt
+					break
+				}
+			}
+		} else {
+			ptDiffs[period] = 0
+		}
+	}
+
+	return ptDiffs
 }
 
 func (g *GUI) createUI() {
@@ -734,6 +1091,8 @@ func (g *GUI) createUI() {
 	g.webhook2Entry = widget.NewEntry()
 	g.webhook3Entry = widget.NewEntry()
 	g.webhook4Entry = widget.NewEntry()
+	g.webhook5Entry = widget.NewEntry()
+	g.webhook6Entry = widget.NewEntry()
 	
 	// Region entries (x,y,width,height)
 	g.region0Entry = widget.NewEntry()
@@ -754,32 +1113,90 @@ func (g *GUI) createUI() {
 	g.region4Entry = widget.NewEntry()
 	g.region4Entry.SetText("191,722,726,722")
 	g.region4Entry.SetPlaceHolder("x,y,width,height")
+	g.region5Entry = widget.NewEntry()
+	g.region5Entry.SetText("918,722,726,722")
+	g.region5Entry.SetPlaceHolder("x,y,width,height")
+	g.region6Entry = widget.NewEntry()
+	g.region6Entry.SetText("1644,722,726,722")
+	g.region6Entry.SetPlaceHolder("x,y,width,height")
+
+	// Region enable/disable checkboxes
+	g.region1EnableCheck = widget.NewCheck("有効", nil)
+	g.region1EnableCheck.SetChecked(true) // Default enabled
+	g.region2EnableCheck = widget.NewCheck("有効", nil)
+	g.region2EnableCheck.SetChecked(true) // Default enabled
+	g.region3EnableCheck = widget.NewCheck("有効", nil)
+	g.region3EnableCheck.SetChecked(true) // Default enabled
+	g.region4EnableCheck = widget.NewCheck("有効", nil)
+	g.region4EnableCheck.SetChecked(true) // Default enabled
+	g.region5EnableCheck = widget.NewCheck("有効", nil)
+	g.region5EnableCheck.SetChecked(true) // Default enabled
+	g.region6EnableCheck = widget.NewCheck("有効", nil)
+	g.region6EnableCheck.SetChecked(true) // Default enabled
+
+	// Region name entries
+	g.region1NameEntry = widget.NewEntry()
+	g.region1NameEntry.SetText("Region 1")
+	g.region1NameEntry.SetPlaceHolder("Region name")
+	g.region2NameEntry = widget.NewEntry()
+	g.region2NameEntry.SetText("Region 2")
+	g.region2NameEntry.SetPlaceHolder("Region name")
+	g.region3NameEntry = widget.NewEntry()
+	g.region3NameEntry.SetText("Region 3")
+	g.region3NameEntry.SetPlaceHolder("Region name")
+	g.region4NameEntry = widget.NewEntry()
+	g.region4NameEntry.SetText("Region 4")
+	g.region4NameEntry.SetPlaceHolder("Region name")
+	g.region5NameEntry = widget.NewEntry()
+	g.region5NameEntry.SetText("Region 5")
+	g.region5NameEntry.SetPlaceHolder("Region name")
+	g.region6NameEntry = widget.NewEntry()
+	g.region6NameEntry.SetText("Region 6")
+	g.region6NameEntry.SetPlaceHolder("Region name")
 
 	// Load settings from .env file
 	g.loadFromEnvFile()
 
 	// Create region selection buttons
 	// Region0 is full screen - add refresh button to re-detect screen size
-	refreshBtn := widget.NewButton("Refresh", func() {
+	refreshBtn := widget.NewButton("更新", func() {
 		x, y, width, height := getScreenDimensions()
 		g.region0Entry.Enable()
 		g.region0Entry.SetText(fmt.Sprintf("%d,%d,%d,%d", x, y, width, height))
 		g.region0Entry.Disable()
 		g.addLog("Screen dimensions refreshed")
 	})
-	region0Container := container.NewBorder(nil, nil, nil, refreshBtn, g.region0Entry)
-	region1Container := container.NewBorder(nil, nil, nil,
-		widget.NewButton("Select", func() { g.showRegionSelector(g.region1Entry) }),
-		g.region1Entry)
-	region2Container := container.NewBorder(nil, nil, nil,
-		widget.NewButton("Select", func() { g.showRegionSelector(g.region2Entry) }),
-		g.region2Entry)
-	region3Container := container.NewBorder(nil, nil, nil,
-		widget.NewButton("Select", func() { g.showRegionSelector(g.region3Entry) }),
-		g.region3Entry)
-	region4Container := container.NewBorder(nil, nil, nil,
-		widget.NewButton("Select", func() { g.showRegionSelector(g.region4Entry) }),
-		g.region4Entry)
+	region0Container := container.NewBorder(nil, nil, nil, refreshBtn, container.NewMax(g.region0Entry))
+	region1Container := container.NewGridWithColumns(4,
+		g.region1EnableCheck,
+		g.region1NameEntry,
+		g.region1Entry,
+		widget.NewButton("選択", func() { g.showRegionSelector(g.region1Entry) }))
+	region2Container := container.NewGridWithColumns(4,
+		g.region2EnableCheck,
+		g.region2NameEntry,
+		g.region2Entry,
+		widget.NewButton("選択", func() { g.showRegionSelector(g.region2Entry) }))
+	region3Container := container.NewGridWithColumns(4,
+		g.region3EnableCheck,
+		g.region3NameEntry,
+		g.region3Entry,
+		widget.NewButton("選択", func() { g.showRegionSelector(g.region3Entry) }))
+	region4Container := container.NewGridWithColumns(4,
+		g.region4EnableCheck,
+		g.region4NameEntry,
+		g.region4Entry,
+		widget.NewButton("選択", func() { g.showRegionSelector(g.region4Entry) }))
+	region5Container := container.NewGridWithColumns(4,
+		g.region5EnableCheck,
+		g.region5NameEntry,
+		g.region5Entry,
+		widget.NewButton("選択", func() { g.showRegionSelector(g.region5Entry) }))
+	region6Container := container.NewGridWithColumns(4,
+		g.region6EnableCheck,
+		g.region6NameEntry,
+		g.region6Entry,
+		widget.NewButton("選択", func() { g.showRegionSelector(g.region6Entry) }))
 
 	settingsForm := container.NewVBox(
 		widget.NewLabel("Settings"),
@@ -791,31 +1208,42 @@ func (g *GUI) createUI() {
 			widget.NewFormItem("Discord Webhook 2", g.webhook2Entry),
 			widget.NewFormItem("Discord Webhook 3", g.webhook3Entry),
 			widget.NewFormItem("Discord Webhook 4", g.webhook4Entry),
+			widget.NewFormItem("Discord Webhook 5", g.webhook5Entry),
+			widget.NewFormItem("Discord Webhook 6", g.webhook6Entry),
 			widget.NewFormItem("Region 0 (Full Screen)", region0Container),
 			widget.NewFormItem("Region 1 (x,y,w,h)", region1Container),
 			widget.NewFormItem("Region 2 (x,y,w,h)", region2Container),
 			widget.NewFormItem("Region 3 (x,y,w,h)", region3Container),
 			widget.NewFormItem("Region 4 (x,y,w,h)", region4Container),
+			widget.NewFormItem("Region 5 (x,y,w,h)", region5Container),
+			widget.NewFormItem("Region 6 (x,y,w,h)", region6Container),
 		),
 	)
 
 	// Control buttons
-	startButton := widget.NewButton("Start", g.startScreenshot)
-	stopButton := widget.NewButton("Stop", g.stopScreenshot)
+	startButton := widget.NewButton("開始", g.startScreenshot)
+	stopButton := widget.NewButton("停止", g.stopScreenshot)
 	stopButton.Disable()
 	
-	saveButton := widget.NewButton("Save Settings", func() {
+	saveButton := widget.NewButton("設定保存", func() {
 		if err := g.saveToEnvFile(); err != nil {
 			g.addLog(fmt.Sprintf("Failed to save settings: %v", err))
 		} else {
 			g.addLog("Settings saved to .env file")
+			// Update tab names to reflect any changes
+			g.updateRegionTabNames()
 		}
+	})
+
+	configButton := widget.NewButton("config.json を開く", func() {
+		g.openConfigFile()
 	})
 
 	controlsContainer := container.NewHBox(
 		startButton,
 		stopButton,
 		saveButton,
+		configButton,
 	)
 
 	// Log display
@@ -832,6 +1260,51 @@ func (g *GUI) createUI() {
 		logScroll.ScrollToBottom()
 	}))
 
+	// Create tabs for regions
+	g.regionTabs = container.NewAppTabs()
+	
+	// Create tab content for each region
+	for i := 1; i <= 6; i++ {
+		regionIndex := strconv.Itoa(i)
+		regionKey := fmt.Sprintf("region_%s", regionIndex)
+		
+		// Create content for this region
+		regionLabel := widget.NewRichTextFromMarkdown("")
+		regionLabel.Wrapping = fyne.TextWrapWord
+		regionScroll := container.NewScroll(regionLabel)
+		regionScroll.SetMinSize(fyne.NewSize(400, 340))
+		
+		// Monitor data updates for this region
+		g.regionDataBindings[regionKey].AddListener(binding.NewDataListener(func() {
+			current, _ := g.regionDataBindings[regionKey].Get()
+			regionLabel.ParseMarkdown(current)
+		}))
+		
+		// Add buttons for each tab
+		refreshBtn := widget.NewButton("更新", func() {
+			g.loadRegionData(regionIndex)
+		})
+		
+		csvBtn := widget.NewButton("CSV を開く", func() {
+			g.openRegionFile(regionIndex, "csv", "datas.csv")
+		})
+		
+		jsonBtn := widget.NewButton("JSON を開く", func() {
+			g.openRegionFile(regionIndex, "json", "datas.json")
+		})
+		
+		tabContent := container.NewVBox(
+			container.NewHBox(refreshBtn, csvBtn, jsonBtn),
+			regionScroll,
+		)
+		
+		tabItem := container.NewTabItem(g.getRegionName(regionIndex), tabContent)
+		g.regionTabs.Append(tabItem)
+	}
+	
+	// Load initial data for all regions
+	g.refreshAllRegionData()
+
 	// Layout
 	leftPanel := container.NewVBox(
 		widget.NewLabel("Status"),
@@ -845,10 +1318,13 @@ func (g *GUI) createUI() {
 	rightPanel := container.NewVBox(
 		widget.NewLabel("Log"),
 		logScroll,
+		widget.NewSeparator(),
+		widget.NewLabel("Region Rankings"),
+		g.regionTabs,
 	)
 
 	content := container.NewHSplit(leftPanel, rightPanel)
-	content.SetOffset(0.6) // Set left panel to 60%
+	content.SetOffset(0.5) // Set left panel to 50%
 
 	g.window.SetContent(content)
 
@@ -1000,11 +1476,15 @@ func (g *GUI) updateEnvironmentVariables() {
 	os.Setenv("DISCORD_WEBHOOK_2", g.webhook2Entry.Text)
 	os.Setenv("DISCORD_WEBHOOK_3", g.webhook3Entry.Text)
 	os.Setenv("DISCORD_WEBHOOK_4", g.webhook4Entry.Text)
+	os.Setenv("DISCORD_WEBHOOK_5", g.webhook5Entry.Text)
+	os.Setenv("DISCORD_WEBHOOK_6", g.webhook6Entry.Text)
 	os.Setenv("REGION_0", g.region0Entry.Text)
 	os.Setenv("REGION_1", g.region1Entry.Text)
 	os.Setenv("REGION_2", g.region2Entry.Text)
 	os.Setenv("REGION_3", g.region3Entry.Text)
 	os.Setenv("REGION_4", g.region4Entry.Text)
+	os.Setenv("REGION_5", g.region5Entry.Text)
+	os.Setenv("REGION_6", g.region6Entry.Text)
 }
 
 func (g *GUI) saveToEnvFile() error {
@@ -1014,13 +1494,29 @@ DISCORD_WEBHOOK_1=%s
 DISCORD_WEBHOOK_2=%s
 DISCORD_WEBHOOK_3=%s
 DISCORD_WEBHOOK_4=%s
+DISCORD_WEBHOOK_5=%s
+DISCORD_WEBHOOK_6=%s
 DESIRED_MINUTES=%s
 REGION_0=%s
 REGION_1=%s
 REGION_2=%s
 REGION_3=%s
 REGION_4=%s
-`, g.geminiKeyEntry.Text, g.webhook0Entry.Text, g.webhook1Entry.Text, g.webhook2Entry.Text, g.webhook3Entry.Text, g.webhook4Entry.Text, g.desiredMinuteEntry.Text, g.region0Entry.Text, g.region1Entry.Text, g.region2Entry.Text, g.region3Entry.Text, g.region4Entry.Text)
+REGION_5=%s
+REGION_6=%s
+REGION_1_ENABLED=%t
+REGION_2_ENABLED=%t
+REGION_3_ENABLED=%t
+REGION_4_ENABLED=%t
+REGION_5_ENABLED=%t
+REGION_6_ENABLED=%t
+REGION_1_NAME=%s
+REGION_2_NAME=%s
+REGION_3_NAME=%s
+REGION_4_NAME=%s
+REGION_5_NAME=%s
+REGION_6_NAME=%s
+`, g.geminiKeyEntry.Text, g.webhook0Entry.Text, g.webhook1Entry.Text, g.webhook2Entry.Text, g.webhook3Entry.Text, g.webhook4Entry.Text, g.webhook5Entry.Text, g.webhook6Entry.Text, g.desiredMinuteEntry.Text, g.region0Entry.Text, g.region1Entry.Text, g.region2Entry.Text, g.region3Entry.Text, g.region4Entry.Text, g.region5Entry.Text, g.region6Entry.Text, g.region1EnableCheck.Checked, g.region2EnableCheck.Checked, g.region3EnableCheck.Checked, g.region4EnableCheck.Checked, g.region5EnableCheck.Checked, g.region6EnableCheck.Checked, g.region1NameEntry.Text, g.region2NameEntry.Text, g.region3NameEntry.Text, g.region4NameEntry.Text, g.region5NameEntry.Text, g.region6NameEntry.Text)
 
 	return os.WriteFile(".env", []byte(content), 0644)
 }
@@ -1047,6 +1543,12 @@ func (g *GUI) loadFromEnvFile() {
 		if val := os.Getenv("DISCORD_WEBHOOK_4"); val != "" {
 			g.webhook4Entry.SetText(val)
 		}
+		if val := os.Getenv("DISCORD_WEBHOOK_5"); val != "" {
+			g.webhook5Entry.SetText(val)
+		}
+		if val := os.Getenv("DISCORD_WEBHOOK_6"); val != "" {
+			g.webhook6Entry.SetText(val)
+		}
 		if val := os.Getenv("DESIRED_MINUTES"); val != "" {
 			g.desiredMinuteEntry.SetText(val)
 		}
@@ -1067,6 +1569,50 @@ func (g *GUI) loadFromEnvFile() {
 		}
 		if val := os.Getenv("REGION_4"); val != "" {
 			g.region4Entry.SetText(val)
+		}
+		if val := os.Getenv("REGION_5"); val != "" {
+			g.region5Entry.SetText(val)
+		}
+		if val := os.Getenv("REGION_6"); val != "" {
+			g.region6Entry.SetText(val)
+		}
+		// Load region enabled states
+		if val := os.Getenv("REGION_1_ENABLED"); val != "" {
+			g.region1EnableCheck.SetChecked(val == "true")
+		}
+		if val := os.Getenv("REGION_2_ENABLED"); val != "" {
+			g.region2EnableCheck.SetChecked(val == "true")
+		}
+		if val := os.Getenv("REGION_3_ENABLED"); val != "" {
+			g.region3EnableCheck.SetChecked(val == "true")
+		}
+		if val := os.Getenv("REGION_4_ENABLED"); val != "" {
+			g.region4EnableCheck.SetChecked(val == "true")
+		}
+		if val := os.Getenv("REGION_5_ENABLED"); val != "" {
+			g.region5EnableCheck.SetChecked(val == "true")
+		}
+		if val := os.Getenv("REGION_6_ENABLED"); val != "" {
+			g.region6EnableCheck.SetChecked(val == "true")
+		}
+		// Load region names
+		if val := os.Getenv("REGION_1_NAME"); val != "" {
+			g.region1NameEntry.SetText(val)
+		}
+		if val := os.Getenv("REGION_2_NAME"); val != "" {
+			g.region2NameEntry.SetText(val)
+		}
+		if val := os.Getenv("REGION_3_NAME"); val != "" {
+			g.region3NameEntry.SetText(val)
+		}
+		if val := os.Getenv("REGION_4_NAME"); val != "" {
+			g.region4NameEntry.SetText(val)
+		}
+		if val := os.Getenv("REGION_5_NAME"); val != "" {
+			g.region5NameEntry.SetText(val)
+		}
+		if val := os.Getenv("REGION_6_NAME"); val != "" {
+			g.region6NameEntry.SetText(val)
 		}
 	}
 }
@@ -1102,7 +1648,7 @@ func (g *GUI) runMainLoop(desiredMinutes []int) {
 			return
 		case <-time.After(waitTime):
 			g.addLog("Running screenshot process...")
-			if err := worker(g.ctx); err != nil {
+			if err := worker(g.ctx, g); err != nil {
 				g.addLog(fmt.Sprintf("Error occurred: %v", err))
 			} else {
 				g.addLog("Screenshot process completed")
