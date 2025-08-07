@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UNI'S ON AIR ランキングビューアー</title>
+    <base href="/web-viewer/">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>UNI'S ON AIR ランキングビューアー</h1>
+            <div class="controls">
+                <div class="control-group">
+                    <label for="regionSelect">リージョン選択:</label>
+                    <select id="regionSelect">
+                        <option value="1">リージョン 1</option>
+                        <option value="2">リージョン 2</option>
+                        <option value="3">リージョン 3</option>
+                        <option value="4">リージョン 4</option>
+                        <option value="5">リージョン 5</option>
+                        <option value="6">リージョン 6</option>
+                    </select>
+                </div>
+                <button id="loadData" class="btn-primary">データ読込</button>
+            </div>
+        </header>
+
+        <div class="filters">
+            <div class="filter-group">
+                <label for="searchInput">プレイヤー検索:</label>
+                <input type="text" id="searchInput" placeholder="名前を入力...">
+            </div>
+            <div class="filter-group">
+                <label for="rankFilter">順位フィルタ:</label>
+                <select id="rankFilter">
+                    <option value="">全て</option>
+                    <option value="1-10">1-10位</option>
+                    <option value="11-50">11-50位</option>
+                    <option value="51-100">51-100位</option>
+                    <option value="101-500">101-500位</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label for="pointFilter">ポイント範囲:</label>
+                <input type="number" id="minPoints" placeholder="最小">
+                <span>〜</span>
+                <input type="number" id="maxPoints" placeholder="最大">
+            </div>
+            <button id="clearFilters" class="btn-secondary">フィルタクリア</button>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <h3>統計情報</h3>
+                <div id="statsContent">
+                    <p>総レコード数: <span id="totalRecords">-</span></p>
+                    <p>表示中: <span id="displayedRecords">-</span></p>
+                    <p>最終更新: <span id="lastUpdate">-</span></p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <h3>時間差分析</h3>
+                <div id="diffAnalysis">
+                    <p>最大上昇: <span id="maxGain">-</span></p>
+                    <p>最大下降: <span id="maxLoss">-</span></p>
+                    <p>平均変動: <span id="avgChange">-</span></p>
+                </div>
+            </div>
+        </div>
+
+        <div class="table-controls">
+            <button id="exportData" class="btn-secondary">エクスポート</button>
+            <select id="pageSize">
+                <option value="25">25件</option>
+                <option value="50">50件</option>
+                <option value="100">100件</option>
+                <option value="all">全て</option>
+            </select>
+        </div>
+
+        <div class="table-container">
+            <table id="dataTable">
+                <thead id="tableHead">
+                    <tr>
+                        <th data-sort="datetime">日時 ↕</th>
+                        <th data-sort="rank">順位 ↕</th>
+                        <th data-sort="name">プレイヤー名 ↕</th>
+                        <th data-sort="points">ポイント ↕</th>
+                        <th>1h</th>
+                        <th>3h</th>
+                        <th>6h</th>
+                        <th>9h</th>
+                        <th>12h</th>
+                        <th>15h</th>
+                        <th>18h</th>
+                        <th>21h</th>
+                        <th>24h</th>
+                        <th>36h(1.5d)</th>
+                        <th>48h(2d)</th>
+                        <th>60h(2.5d)</th>
+                        <th>72h(3d)</th>
+                        <th>84h(3.5d)</th>
+                        <th>96h(4d)</th>
+                        <th>108h(4.5d)</th>
+                        <th>120h(5d)</th>
+                        <th>132h(5.5d)</th>
+                        <th>144h(6d)</th>
+                        <th>156h(6.5d)</th>
+                        <th>168h(7d)</th>
+                        <th>180h(7.5d)</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody">
+                </tbody>
+            </table>
+            <div id="loadingSpinner" class="loading hidden">読込中...</div>
+        </div>
+
+        <div class="pagination" id="pagination">
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

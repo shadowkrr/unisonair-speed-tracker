@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -38,7 +39,6 @@ import (
 	"google.golang.org/api/option"
 )
 
-
 type Config struct {
 	NameReplaces map[string]string `json:"name_replaces"`
 }
@@ -51,6 +51,16 @@ type RankingEntry struct {
 
 type RankingResponse struct {
 	Ranking []RankingEntry `json:"ranking"`
+}
+
+type TableData struct {
+	Rank    string
+	Name    string
+	Points  string
+	Diff1h  string
+	Diff6h  string
+	Diff12h string
+	Diff24h string
 }
 
 type Screenshot struct {
@@ -80,10 +90,10 @@ func NewNoSleepManager() *NoSleepManager {
 	if runtime.GOOS != "windows" {
 		return nil
 	}
-	
+
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	setThreadExec := kernel32.NewProc("SetThreadExecutionState")
-	
+
 	return &NoSleepManager{
 		kernel32:      kernel32,
 		setThreadExec: setThreadExec,
@@ -95,22 +105,22 @@ func (ns *NoSleepManager) Start(preventScreenOff bool) error {
 	if ns == nil || runtime.GOOS != "windows" {
 		return fmt.Errorf("NoSleep is only supported on Windows")
 	}
-	
+
 	if ns.isActive {
 		return nil
 	}
-	
+
 	flags := ES_CONTINUOUS | ES_SYSTEM_REQUIRED
 	if preventScreenOff {
 		flags |= ES_DISPLAY_REQUIRED
 		ns.preventScreen = true
 	}
-	
+
 	ret, _, err := ns.setThreadExec.Call(uintptr(flags))
 	if ret == 0 {
 		return fmt.Errorf("failed to set thread execution state: %v", err)
 	}
-	
+
 	ns.isActive = true
 	return nil
 }
@@ -120,12 +130,12 @@ func (ns *NoSleepManager) Stop() error {
 	if ns == nil || !ns.isActive {
 		return nil
 	}
-	
+
 	ret, _, err := ns.setThreadExec.Call(uintptr(ES_CONTINUOUS))
 	if ret == 0 {
 		return fmt.Errorf("failed to restore thread execution state: %v", err)
 	}
-	
+
 	ns.isActive = false
 	ns.preventScreen = false
 	return nil
@@ -175,7 +185,7 @@ func NewScreenshot(index string, x, y, width, height int, webhookURL string) *Sc
 }
 
 func loadConfig() (*Config, error) {
-	configFile := "config.json"
+	configFile := "name-mapping.json"
 	if _, err := os.Stat(configFile); os.IsNotExist(err) {
 		// Create default config
 		defaultConfig := &Config{
@@ -226,7 +236,7 @@ func geminiExtractFromImage(ctx context.Context, client *genai.Client, imagePath
 	}
 
 	model := client.GenerativeModel("gemini-1.5-flash")
-	
+
 	prompt := `Extract ranking data from 1st to 11th place and output as JSON in the following format. Output must be JSON only:
 {"ranking": [{"rank": "1", "name": "player_name", "pt": "points"}, ...]}`
 
@@ -334,7 +344,7 @@ func sendDiscordWebhook(webhookURL, username, content, imagePath string) error {
 func (s *Screenshot) Process(ctx context.Context, genaiClient *genai.Client, config *Config, now time.Time, gui *GUI) error {
 	fileName := now.Format("200601021504") + ".png"
 	imagePath := filepath.Join(s.BasePath, "screenshot", fileName)
-	
+
 	fmt.Printf("Screenshot process %s\n", imagePath)
 
 	// Capture screenshot
@@ -361,7 +371,7 @@ func (s *Screenshot) Process(ctx context.Context, genaiClient *genai.Client, con
 			} else if geminiResult != nil {
 				// Clear current time slot data
 				datas[hymh] = []RankingEntry{}
-				
+
 				for i, item := range geminiResult.Ranking {
 					name := item.Name
 					pt := item.PT
@@ -373,7 +383,7 @@ func (s *Screenshot) Process(ctx context.Context, genaiClient *genai.Client, con
 
 					// Clean pt value
 					cleanPt := processPointText(pt)
-					
+
 					// Add to datas
 					datas[hymh] = append(datas[hymh], RankingEntry{
 						Rank: strconv.Itoa(i + 1),
@@ -385,19 +395,19 @@ func (s *Screenshot) Process(ctx context.Context, genaiClient *genai.Client, con
 					ptDiffs := s.calculatePointDifferences(datas, hymh, name, cleanPt, now)
 
 					// Format result with point differences like Python version
-					result = append(result, fmt.Sprintf("%d. %-20s %12s\n   1h:%12s 6h:%12s\n  12h:%12s 24h:%12s", 
+					result = append(result, fmt.Sprintf("%d. %-20s %12s\n   1h:%12s 6h:%12s\n  12h:%12s 24h:%12s",
 						i+1, name, cleanPt,
 						formatPointDiff(ptDiffs["1h"]),
 						formatPointDiff(ptDiffs["6h"]),
 						formatPointDiff(ptDiffs["12h"]),
 						formatPointDiff(ptDiffs["24h"])))
 				}
-				
+
 				// Save JSON data
 				if err := s.saveJSON(datas); err != nil {
 					fmt.Printf("Failed to save JSON: %v\n", err)
 				}
-				
+
 				// Save CSV data
 				if err := s.saveCSV(datas); err != nil {
 					fmt.Printf("Failed to save CSV: %v\n", err)
@@ -436,7 +446,7 @@ func (s *Screenshot) calculatePointDifferences(datas map[string][]RankingEntry, 
 	for period, hours := range periods {
 		pastTime := now.Add(time.Duration(-hours) * time.Hour)
 		pastTimeKey := pastTime.Format("2006010215")
-		
+
 		if pastData, exists := datas[pastTimeKey]; exists {
 			for _, entry := range pastData {
 				if entry.Name == name {
@@ -470,7 +480,7 @@ func addCommas(n int) string {
 	if len(str) <= 3 {
 		return str
 	}
-	
+
 	var result string
 	for i, digit := range str {
 		if i > 0 && (len(str)-i)%3 == 0 {
@@ -514,9 +524,11 @@ func (s *Screenshot) saveCSV(datas map[string][]RankingEntry) error {
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	// Write header - match Python version with extended time periods
-	header := []string{"年月日時", "名前", "順位", "ポイント", "時速ポイント", 
-		"1h", "3h", "6h", "9h", "12h", "15h", "18h", "21h", "24h"}
+	// Write header with extended time periods
+	header := []string{"年月日時", "順位", "名前", "ポイント", 
+		"1h", "3h", "6h", "9h", "12h", "15h", "18h", "21h", "24h", 
+		"36h(1.5d)", "48h(2d)", "60h(2.5d)", "72h(3d)", "84h(3.5d)", "96h(4d)", 
+		"108h(4.5d)", "120h(5d)", "132h(5.5d)", "144h(6d)", "156h(6.5d)", "168h(7d)", "180h(7.5d)"}
 	if err := writer.Write(header); err != nil {
 		return err
 	}
@@ -536,27 +548,21 @@ func (s *Screenshot) saveCSV(datas map[string][]RankingEntry) error {
 		}
 	}
 
-	previousPoints := make(map[string]int)
 	for _, timestamp := range timestamps {
 		entries := datas[timestamp]
 		currentTime, _ := time.Parse("2006010215", timestamp)
-		
+
 		for _, entry := range entries {
 			pt, _ := strconv.Atoi(strings.ReplaceAll(entry.PT, ",", ""))
-			hourlyIncrease := 0
-			if prevPt, exists := previousPoints[entry.Name]; exists {
-				hourlyIncrease = pt - prevPt
-			}
-			previousPoints[entry.Name] = pt
 
-			// Calculate point differences for extended time periods
-			timePeriods := []int{1, 3, 6, 9, 12, 15, 18, 21, 24}
+			// Calculate point differences for extended time periods (to match header)
+			timePeriods := []int{1, 3, 6, 9, 12, 15, 18, 21, 24, 36, 48, 60, 72, 84, 96, 108, 120, 132, 144, 156, 168, 180}
 			ptDiffsExtended := make([]string, len(timePeriods))
-			
+
 			for i, hours := range timePeriods {
 				pastTime := currentTime.Add(time.Duration(-hours) * time.Hour)
 				pastTimeKey := pastTime.Format("2006010215")
-				
+
 				ptDiff := 0
 				if pastData, exists := datas[pastTimeKey]; exists {
 					for _, pastEntry := range pastData {
@@ -567,18 +573,23 @@ func (s *Screenshot) saveCSV(datas map[string][]RankingEntry) error {
 						}
 					}
 				}
-				ptDiffsExtended[i] = strconv.Itoa(ptDiff)
+				if ptDiff == 0 {
+					ptDiffsExtended[i] = "-"
+				} else if ptDiff > 0 {
+					ptDiffsExtended[i] = fmt.Sprintf("+%s", addCommas(ptDiff))
+				} else {
+					ptDiffsExtended[i] = addCommas(ptDiff)
+				}
 			}
 
 			record := []string{
 				timestamp,
-				entry.Name,
 				entry.Rank,
+				entry.Name,
 				entry.PT,
-				strconv.Itoa(hourlyIncrease),
 			}
 			record = append(record, ptDiffsExtended...)
-			
+
 			if err := writer.Write(record); err != nil {
 				return err
 			}
@@ -592,7 +603,7 @@ func isRegionEnabled(regionIndex int, gui *GUI) bool {
 	if gui == nil {
 		return true // Default to enabled if no GUI
 	}
-	
+
 	switch regionIndex {
 	case 1:
 		return gui.region1EnableCheck.Checked
@@ -621,7 +632,7 @@ func worker(ctx context.Context, gui *GUI) error {
 	if geminiAPIKey == "" {
 		return fmt.Errorf("GEMINI_API_KEY environment variable is not set")
 	}
-	
+
 	keyLen := len(geminiAPIKey)
 	if keyLen > 10 {
 		keyLen = 10
@@ -646,7 +657,7 @@ func worker(ctx context.Context, gui *GUI) error {
 
 	// Execute screenshot processing
 	screenshots := make([]*Screenshot, 0, 7)
-	
+
 	// Load regions from environment variables
 	for i := 0; i < 7; i++ {
 		regionStr := os.Getenv(fmt.Sprintf("REGION_%d", i))
@@ -654,7 +665,7 @@ func worker(ctx context.Context, gui *GUI) error {
 			fmt.Printf("Region %d not set in environment\n", i)
 			continue
 		}
-		
+
 		// Check if region is enabled (skip check for region 0 - always enabled)
 		if i > 0 && gui != nil {
 			enabled := isRegionEnabled(i, gui)
@@ -663,20 +674,19 @@ func worker(ctx context.Context, gui *GUI) error {
 				continue
 			}
 		}
-		
+
 		fmt.Printf("Loading REGION_%d: %s\n", i, regionStr)
-		
+
 		x, y, width, height, err := parseRegion(regionStr)
 		if err != nil {
 			log.Printf("Invalid region %d: %v", i, err)
 			continue
 		}
-		
+
 		webhook := os.Getenv(fmt.Sprintf("DISCORD_WEBHOOK_%d", i))
 		screenshots = append(screenshots, NewScreenshot(strconv.Itoa(i), x, y, width, height, webhook))
 		fmt.Printf("Created screenshot %d: x=%d, y=%d, w=%d, h=%d\n", i, x, y, width, height)
 	}
-	
 
 	for _, shot := range screenshots {
 		if err := shot.Process(ctx, client, config, now, gui); err != nil {
@@ -721,33 +731,34 @@ func mainLoop(ctx context.Context, desiredMinutes []int) {
 }
 
 type GUI struct {
-	app               fyne.App
-	window            fyne.Window
-	isRunning         bool
-	ctx               context.Context
-	cancel            context.CancelFunc
-	statusBinding     binding.String
-	logBinding        binding.String
-	intervalEntry     *widget.Entry
+	app                fyne.App
+	window             fyne.Window
+	isRunning          bool
+	ctx                context.Context
+	cancel             context.CancelFunc
+	statusBinding      binding.String
+	logBinding         binding.String
+	intervalEntry      *widget.Entry
 	desiredMinuteEntry *widget.Entry
-	geminiKeyEntry    *widget.Entry
-	webhook0Entry     *widget.Entry
-	webhook1Entry     *widget.Entry
-	webhook2Entry     *widget.Entry
-	webhook3Entry     *widget.Entry
-	webhook4Entry     *widget.Entry
-	webhook5Entry     *widget.Entry
-	webhook6Entry     *widget.Entry
-	region0Entry      *widget.Entry
-	region1Entry      *widget.Entry
-	region2Entry      *widget.Entry
-	region3Entry      *widget.Entry
-	region4Entry      *widget.Entry
-	region5Entry      *widget.Entry
-	region6Entry      *widget.Entry
-	noSleepManager    *NoSleepManager
-	regionTabs        *container.AppTabs
+	geminiKeyEntry     *widget.Entry
+	webhook0Entry      *widget.Entry
+	webhook1Entry      *widget.Entry
+	webhook2Entry      *widget.Entry
+	webhook3Entry      *widget.Entry
+	webhook4Entry      *widget.Entry
+	webhook5Entry      *widget.Entry
+	webhook6Entry      *widget.Entry
+	region0Entry       *widget.Entry
+	region1Entry       *widget.Entry
+	region2Entry       *widget.Entry
+	region3Entry       *widget.Entry
+	region4Entry       *widget.Entry
+	region5Entry       *widget.Entry
+	region6Entry       *widget.Entry
+	noSleepManager     *NoSleepManager
+	regionTabs         *container.AppTabs
 	regionDataBindings map[string]binding.String
+	regionTables       map[string]*widget.Table
 	region1EnableCheck *widget.Check
 	region2EnableCheck *widget.Check
 	region3EnableCheck *widget.Check
@@ -771,7 +782,7 @@ func getScreenDimensions() (int, int, int, int) {
 func NewGUI() *GUI {
 	myApp := app.New()
 	myApp.SetIcon(nil)
-	
+
 	// Load Japanese font if available
 	if fontResource, err := fyne.LoadResourceFromPath("NotoSansJP-Medium.ttf"); err == nil {
 		myApp.Settings().SetTheme(&customTheme{fontResource: fontResource})
@@ -801,6 +812,7 @@ func NewGUI() *GUI {
 		statusBinding:      statusBinding,
 		logBinding:         logBinding,
 		regionDataBindings: regionDataBindings,
+		regionTables:       make(map[string]*widget.Table),
 		noSleepManager:     NewNoSleepManager(),
 	}
 
@@ -855,14 +867,14 @@ func (g *GUI) updateRegionTabNames() {
 	if g.regionTabs == nil {
 		return
 	}
-	
+
 	// Update tab names for regions 1-4
 	for i := 0; i < len(g.regionTabs.Items); i++ {
 		regionIndex := strconv.Itoa(i + 1)
 		newTabName := g.getRegionName(regionIndex)
 		g.regionTabs.Items[i].Text = newTabName
 	}
-	
+
 	// Refresh the tabs display
 	g.regionTabs.Refresh()
 }
@@ -878,18 +890,27 @@ func (g *GUI) loadRegionData(regionIndex string) {
 	jsonPath := filepath.Join("res", regionIndex, "json", "datas.json")
 	data, err := os.ReadFile(jsonPath)
 	if err != nil {
-		binding.Set(fmt.Sprintf("No data file found for Region %s\n\n*Path: %s*", regionIndex, jsonPath))
+		binding.Set(fmt.Sprintf("No data|%s", time.Now().Format("2006/01/02 15:04")))
+		if table, exists := g.regionTables[regionKey]; exists {
+			table.Refresh()
+		}
 		return
 	}
 
 	var datas map[string][]RankingEntry
 	if err := json.Unmarshal(data, &datas); err != nil {
-		binding.Set(fmt.Sprintf("Error reading data file for Region %s: %v", regionIndex, err))
+		binding.Set(fmt.Sprintf("Error|%s", time.Now().Format("2006/01/02 15:04")))
+		if table, exists := g.regionTables[regionKey]; exists {
+			table.Refresh()
+		}
 		return
 	}
 
 	if len(datas) == 0 {
-		binding.Set(fmt.Sprintf("No ranking data available for Region %s", regionIndex))
+		binding.Set(fmt.Sprintf("No data|%s", time.Now().Format("2006/01/02 15:04")))
+		if table, exists := g.regionTables[regionKey]; exists {
+			table.Refresh()
+		}
 		return
 	}
 
@@ -903,7 +924,10 @@ func (g *GUI) loadRegionData(regionIndex string) {
 
 	ranking := datas[latestTime]
 	if len(ranking) == 0 {
-		binding.Set(fmt.Sprintf("No ranking entries for Region %s", regionIndex))
+		binding.Set(fmt.Sprintf("No entries|%s", time.Now().Format("2006/01/02 15:04")))
+		if table, exists := g.regionTables[regionKey]; exists {
+			table.Refresh()
+		}
 		return
 	}
 
@@ -916,39 +940,38 @@ func (g *GUI) loadRegionData(regionIndex string) {
 		timeDisplay = parsedTime.Format("2006/01/02 15:04")
 	}
 
-	// Format content
-	var content strings.Builder
-	content.WriteString(fmt.Sprintf("## 🏆 %s Ranking\n", g.getRegionName(regionIndex)))
-	content.WriteString(fmt.Sprintf("*Updated: %s*\n\n", timeDisplay))
-
-	// Show all players (up to 20)
-	maxDisplay := 20
+	// Create table data
+	var tableData []TableData
+	maxDisplay := 50 // Show up to 50 players in table
 	if len(ranking) < maxDisplay {
 		maxDisplay = len(ranking)
 	}
 
 	for i := 0; i < maxDisplay; i++ {
 		entry := ranking[i]
-		rank := i + 1
 
 		// Calculate point differences for different time periods
 		ptDiffs := g.calculatePointDifferences(datas, latestTime, entry.Name, entry.PT)
 
-		// Format like the original Python version
-		content.WriteString(fmt.Sprintf("%d. %-20s %12s\n", rank, entry.Name, entry.PT))
-		content.WriteString(fmt.Sprintf("   1h:%12s 6h:%12s\n", 
-			formatPointDiff(ptDiffs["1h"]),
-			formatPointDiff(ptDiffs["6h"])))
-		content.WriteString(fmt.Sprintf("  12h:%12s 24h:%12s\n\n", 
-			formatPointDiff(ptDiffs["12h"]),
-			formatPointDiff(ptDiffs["24h"])))
+		tableData = append(tableData, TableData{
+			Rank:    fmt.Sprintf("%d", i+1),
+			Name:    entry.Name,
+			Points:  entry.PT,
+			Diff1h:  formatPointDiff(ptDiffs["1h"]),
+			Diff6h:  formatPointDiff(ptDiffs["6h"]),
+			Diff12h: formatPointDiff(ptDiffs["12h"]),
+			Diff24h: formatPointDiff(ptDiffs["24h"]),
+		})
 	}
 
-	if len(ranking) > maxDisplay {
-		content.WriteString(fmt.Sprintf("\n*...and %d more players*", len(ranking)-maxDisplay))
-	}
+	// Store table data in JSON format
+	jsonData, _ := json.Marshal(tableData)
+	binding.Set(fmt.Sprintf("%s|%s", string(jsonData), timeDisplay))
 
-	binding.Set(content.String())
+	// Refresh table
+	if table, exists := g.regionTables[regionKey]; exists {
+		table.Refresh()
+	}
 }
 
 func (g *GUI) refreshAllRegionData() {
@@ -958,29 +981,29 @@ func (g *GUI) refreshAllRegionData() {
 }
 
 func (g *GUI) openConfigFile() {
-	configPath := "config.json"
-	
-	// Create config.json if it doesn't exist
+	configPath := "name-mapping.json"
+
+	// Create name-mapping.json if it doesn't exist
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		config, err := loadConfig()
 		if err != nil {
-			g.addLog(fmt.Sprintf("Failed to create config.json: %v", err))
+			g.addLog(fmt.Sprintf("Failed to create name-mapping.json: %v", err))
 			return
 		}
-		
+
 		data, err := json.MarshalIndent(config, "", "    ")
 		if err != nil {
 			g.addLog(fmt.Sprintf("Failed to marshal config: %v", err))
 			return
 		}
-		
+
 		if err := os.WriteFile(configPath, data, 0644); err != nil {
-			g.addLog(fmt.Sprintf("Failed to write config.json: %v", err))
+			g.addLog(fmt.Sprintf("Failed to write name-mapping.json: %v", err))
 			return
 		}
-		g.addLog("Created config.json with default settings")
+		g.addLog("Created name-mapping.json with default settings")
 	}
-	
+
 	// Open the file with default system editor
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -995,23 +1018,23 @@ func (g *GUI) openConfigFile() {
 		g.addLog("Unsupported operating system for opening files")
 		return
 	}
-	
+
 	if err := cmd.Start(); err != nil {
-		g.addLog(fmt.Sprintf("Failed to open config.json: %v", err))
+		g.addLog(fmt.Sprintf("Failed to open name-mapping.json: %v", err))
 	} else {
-		g.addLog("Opened config.json in default editor")
+		g.addLog("Opened name-mapping.json in default editor")
 	}
 }
 
 func (g *GUI) openRegionFile(regionIndex, fileType, fileName string) {
 	filePath := filepath.Join("res", regionIndex, fileType, fileName)
-	
+
 	// Check if file exists
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		g.addLog(fmt.Sprintf("File not found: %s", filePath))
 		return
 	}
-	
+
 	// Open the file with default system application
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -1026,7 +1049,7 @@ func (g *GUI) openRegionFile(regionIndex, fileType, fileName string) {
 		g.addLog("Unsupported operating system for opening files")
 		return
 	}
-	
+
 	if err := cmd.Start(); err != nil {
 		g.addLog(fmt.Sprintf("Failed to open %s: %v", filePath, err))
 	} else {
@@ -1058,7 +1081,7 @@ func (g *GUI) calculatePointDifferences(datas map[string][]RankingEntry, current
 	for period, hours := range periods {
 		pastTime := currentTimeObj.Add(time.Duration(-hours) * time.Hour)
 		pastTimeKey := pastTime.Format("2006010215")
-		
+
 		if pastData, exists := datas[pastTimeKey]; exists {
 			for _, entry := range pastData {
 				if entry.Name == name {
@@ -1093,7 +1116,7 @@ func (g *GUI) createUI() {
 	g.webhook4Entry = widget.NewEntry()
 	g.webhook5Entry = widget.NewEntry()
 	g.webhook6Entry = widget.NewEntry()
-	
+
 	// Region entries (x,y,width,height)
 	g.region0Entry = widget.NewEntry()
 	// Auto-set region0 to full screen dimensions
@@ -1224,7 +1247,7 @@ func (g *GUI) createUI() {
 	startButton := widget.NewButton("開始", g.startScreenshot)
 	stopButton := widget.NewButton("停止", g.stopScreenshot)
 	stopButton.Disable()
-	
+
 	saveButton := widget.NewButton("設定保存", func() {
 		if err := g.saveToEnvFile(); err != nil {
 			g.addLog(fmt.Sprintf("Failed to save settings: %v", err))
@@ -1235,7 +1258,7 @@ func (g *GUI) createUI() {
 		}
 	})
 
-	configButton := widget.NewButton("config.json を開く", func() {
+	configButton := widget.NewButton("name-mapping.json を開く", func() {
 		g.openConfigFile()
 	})
 
@@ -1250,7 +1273,7 @@ func (g *GUI) createUI() {
 	logLabel := widget.NewRichTextFromMarkdown("")
 	logLabel.Wrapping = fyne.TextWrapWord
 	logScroll := container.NewScroll(logLabel)
-	logScroll.SetMinSize(fyne.NewSize(400, 300))
+	logScroll.SetMinSize(fyne.NewSize(400, 160))
 
 	// Monitor log updates
 	g.logBinding.AddListener(binding.NewDataListener(func() {
@@ -1262,46 +1285,172 @@ func (g *GUI) createUI() {
 
 	// Create tabs for regions
 	g.regionTabs = container.NewAppTabs()
-	
+
 	// Create tab content for each region
 	for i := 1; i <= 6; i++ {
 		regionIndex := strconv.Itoa(i)
 		regionKey := fmt.Sprintf("region_%s", regionIndex)
-		
-		// Create content for this region
-		regionLabel := widget.NewRichTextFromMarkdown("")
-		regionLabel.Wrapping = fyne.TextWrapWord
-		regionScroll := container.NewScroll(regionLabel)
-		regionScroll.SetMinSize(fyne.NewSize(400, 340))
-		
+
+		// Create update time label
+		updateTimeLabel := widget.NewLabel("最終更新: -")
+		updateTimeLabel.TextStyle = fyne.TextStyle{Italic: true}
+
+		// Create table for this region
+		var tableData []TableData
+		regionTable := widget.NewTable(
+			func() (int, int) {
+				return len(tableData) + 1, 7 // +1 for header, 7 columns
+			},
+			func() fyne.CanvasObject {
+				label := widget.NewLabel("")
+				label.Alignment = fyne.TextAlignCenter
+				return label
+			},
+			func(i widget.TableCellID, o fyne.CanvasObject) {
+				label := o.(*widget.Label)
+
+				// Header row
+				if i.Row == 0 {
+					label.TextStyle = fyne.TextStyle{Bold: true}
+					switch i.Col {
+					case 0:
+						label.SetText("順位")
+						label.Alignment = fyne.TextAlignCenter
+					case 1:
+						label.SetText("プレイヤー名")
+						label.Alignment = fyne.TextAlignLeading
+					case 2:
+						label.SetText("ポイント")
+						label.Alignment = fyne.TextAlignTrailing
+					case 3:
+						label.SetText("1h差")
+						label.Alignment = fyne.TextAlignTrailing
+					case 4:
+						label.SetText("6h差")
+						label.Alignment = fyne.TextAlignTrailing
+					case 5:
+						label.SetText("12h差")
+						label.Alignment = fyne.TextAlignTrailing
+					case 6:
+						label.SetText("24h差")
+						label.Alignment = fyne.TextAlignTrailing
+					}
+					return
+				}
+
+				// Data rows
+				if i.Row-1 < len(tableData) {
+					data := tableData[i.Row-1]
+					label.TextStyle = fyne.TextStyle{Bold: false}
+
+					switch i.Col {
+					case 0:
+						label.SetText(data.Rank)
+						label.Alignment = fyne.TextAlignCenter
+						// Gold/Silver/Bronze colors for top 3
+						rank, _ := strconv.Atoi(data.Rank)
+						if rank == 1 {
+							label.TextStyle = fyne.TextStyle{Bold: true}
+						}
+					case 1:
+						label.SetText(data.Name)
+						label.Alignment = fyne.TextAlignLeading
+					case 2:
+						label.SetText(data.Points)
+						label.Alignment = fyne.TextAlignTrailing
+					case 3:
+						label.SetText(data.Diff1h)
+						label.Alignment = fyne.TextAlignTrailing
+						if strings.HasPrefix(data.Diff1h, "+") {
+							label.TextStyle = fyne.TextStyle{Bold: true}
+						}
+					case 4:
+						label.SetText(data.Diff6h)
+						label.Alignment = fyne.TextAlignTrailing
+						if strings.HasPrefix(data.Diff6h, "+") {
+							label.TextStyle = fyne.TextStyle{Bold: true}
+						}
+					case 5:
+						label.SetText(data.Diff12h)
+						label.Alignment = fyne.TextAlignTrailing
+						if strings.HasPrefix(data.Diff12h, "+") {
+							label.TextStyle = fyne.TextStyle{Bold: true}
+						}
+					case 6:
+						label.SetText(data.Diff24h)
+						label.Alignment = fyne.TextAlignTrailing
+						if strings.HasPrefix(data.Diff24h, "+") {
+							label.TextStyle = fyne.TextStyle{Bold: true}
+						}
+					}
+				}
+			},
+		)
+
+		// Set column widths
+		regionTable.SetColumnWidth(0, 60)  // Rank
+		regionTable.SetColumnWidth(1, 180) // Name
+		regionTable.SetColumnWidth(2, 100) // Points
+		regionTable.SetColumnWidth(3, 80)  // 1h
+		regionTable.SetColumnWidth(4, 80)  // 6h
+		regionTable.SetColumnWidth(5, 80)  // 12h
+		regionTable.SetColumnWidth(6, 80)  // 24h
+
+		// Store table reference
+		g.regionTables[regionKey] = regionTable
+
 		// Monitor data updates for this region
-		g.regionDataBindings[regionKey].AddListener(binding.NewDataListener(func() {
-			current, _ := g.regionDataBindings[regionKey].Get()
-			regionLabel.ParseMarkdown(current)
+		localRegionIndex := regionIndex
+		localRegionKey := regionKey
+		localTable := regionTable
+		localUpdateLabel := updateTimeLabel
+
+		g.regionDataBindings[localRegionKey].AddListener(binding.NewDataListener(func() {
+			current, _ := g.regionDataBindings[localRegionKey].Get()
+			parts := strings.Split(current, "|")
+
+			if len(parts) == 2 {
+				// Parse JSON data
+				var newData []TableData
+				if err := json.Unmarshal([]byte(parts[0]), &newData); err == nil {
+					tableData = newData
+					localTable.Refresh()
+				}
+				// Update time label
+				localUpdateLabel.SetText(fmt.Sprintf("最終更新: %s", parts[1]))
+			} else {
+				// Handle error messages
+				tableData = nil
+				localTable.Refresh()
+				localUpdateLabel.SetText("最終更新: -")
+			}
 		}))
-		
+
 		// Add buttons for each tab
 		refreshBtn := widget.NewButton("更新", func() {
-			g.loadRegionData(regionIndex)
+			g.loadRegionData(localRegionIndex)
 		})
-		
+
 		csvBtn := widget.NewButton("CSV を開く", func() {
-			g.openRegionFile(regionIndex, "csv", "datas.csv")
+			g.openRegionFile(localRegionIndex, "csv", "datas.csv")
 		})
-		
+
 		jsonBtn := widget.NewButton("JSON を開く", func() {
-			g.openRegionFile(regionIndex, "json", "datas.json")
+			g.openRegionFile(localRegionIndex, "json", "datas.json")
 		})
-		
+
+		tableScroll := container.NewScroll(regionTable)
+		tableScroll.SetMinSize(fyne.NewSize(700, 480))
+
 		tabContent := container.NewVBox(
-			container.NewHBox(refreshBtn, csvBtn, jsonBtn),
-			regionScroll,
+			container.NewHBox(refreshBtn, csvBtn, jsonBtn, widget.NewSeparator(), updateTimeLabel),
+			tableScroll,
 		)
-		
-		tabItem := container.NewTabItem(g.getRegionName(regionIndex), tabContent)
+
+		tabItem := container.NewTabItem(g.getRegionName(localRegionIndex), tabContent)
 		g.regionTabs.Append(tabItem)
 	}
-	
+
 	// Load initial data for all regions
 	g.refreshAllRegionData()
 
@@ -1315,11 +1464,21 @@ func (g *GUI) createUI() {
 		controlsContainer,
 	)
 
+	// Create header with label and button
+	rankingsHeader := container.NewBorder(
+		nil, nil,
+		widget.NewLabel("Region Rankings"),
+		widget.NewButton("ビューアーを開く", func() {
+			g.openWebViewer()
+		}),
+		nil,
+	)
+
 	rightPanel := container.NewVBox(
 		widget.NewLabel("Log"),
 		logScroll,
 		widget.NewSeparator(),
-		widget.NewLabel("Region Rankings"),
+		rankingsHeader,
 		g.regionTabs,
 	)
 
@@ -1354,9 +1513,9 @@ func (g *GUI) startScreenshot() {
 
 	g.isRunning = true
 	g.ctx, g.cancel = context.WithCancel(context.Background())
-	
+
 	desiredMinutes, _ := parseDesiredMinutes(g.desiredMinuteEntry.Text)
-	
+
 	g.statusBinding.Set(fmt.Sprintf("Running (at minutes: %v)", desiredMinutes))
 	g.addLog("Screenshot process started")
 
@@ -1369,7 +1528,7 @@ func (g *GUI) startScreenshot() {
 
 	// Update environment variables with current GUI values
 	g.updateEnvironmentVariables()
-	
+
 	// Save current GUI settings to .env file
 	if err := g.saveToEnvFile(); err != nil {
 		g.addLog(fmt.Sprintf("Warning: Failed to save settings: %v", err))
@@ -1404,33 +1563,32 @@ func (g *GUI) stopScreenshot() {
 	g.addLog("Screenshot process stopped")
 }
 
-
 func parseDesiredMinutes(input string) ([]int, error) {
 	parts := strings.Split(input, ",")
 	minutes := make([]int, 0, len(parts))
-	
+
 	for _, part := range parts {
 		trimmed := strings.TrimSpace(part)
 		if trimmed == "" {
 			continue
 		}
-		
+
 		minute, err := strconv.Atoi(trimmed)
 		if err != nil {
 			return nil, fmt.Errorf("invalid minute value: %s", trimmed)
 		}
-		
+
 		if minute < 0 || minute > 59 {
 			return nil, fmt.Errorf("minute must be between 0 and 59: %d", minute)
 		}
-		
+
 		minutes = append(minutes, minute)
 	}
-	
+
 	if len(minutes) == 0 {
 		return nil, fmt.Errorf("at least one minute must be specified")
 	}
-	
+
 	return minutes, nil
 }
 
@@ -1438,12 +1596,12 @@ func parseRegion(input string) (x, y, width, height int, err error) {
 	if input == "" {
 		return 0, 0, 0, 0, fmt.Errorf("region cannot be empty")
 	}
-	
+
 	parts := strings.Split(input, ",")
 	if len(parts) != 4 {
 		return 0, 0, 0, 0, fmt.Errorf("region must have 4 values: x,y,width,height")
 	}
-	
+
 	values := make([]int, 4)
 	for i, part := range parts {
 		trimmed := strings.TrimSpace(part)
@@ -1453,7 +1611,7 @@ func parseRegion(input string) (x, y, width, height int, err error) {
 		}
 		values[i] = val
 	}
-	
+
 	return values[0], values[1], values[2], values[3], nil
 }
 
@@ -1666,10 +1824,10 @@ func (g *GUI) Run() {
 func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 	// Hide main window temporarily
 	g.window.Hide()
-	
+
 	// Wait a bit for window to hide
 	time.Sleep(200 * time.Millisecond)
-	
+
 	// Capture full screen
 	bounds := screenshot.GetDisplayBounds(0)
 	img, err := screenshot.CaptureRect(bounds)
@@ -1678,32 +1836,32 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 		g.window.Show()
 		return
 	}
-	
+
 	// Create selection window
 	selectWindow := g.app.NewWindow("Select Region - Click and drag to select")
 	selectWindow.Resize(fyne.NewSize(float32(bounds.Dx())/2, float32(bounds.Dy())/2))
 	selectWindow.CenterOnScreen()
-	
+
 	// Convert image to resource
 	fyneImage := canvas.NewImageFromImage(img)
 	fyneImage.FillMode = canvas.ImageFillContain
-	
+
 	// Variables for selection
 	var startX, startY, endX, endY float32
 	var selecting bool
 	var selectionRect *canvas.Rectangle
-	
+
 	// Create selection rectangle
 	selectionRect = canvas.NewRectangle(color.Transparent)
 	selectionRect.StrokeColor = color.RGBA{255, 0, 0, 255}
 	selectionRect.StrokeWidth = 2
 	selectionRect.FillColor = color.Transparent
 	selectionRect.Hide() // Initially hidden
-	
+
 	// Create image container with selection overlay
 	imageWithSelection := container.NewWithoutLayout(fyneImage, selectionRect)
 	scroll := container.NewScroll(imageWithSelection)
-	
+
 	// Set up keyboard handling
 	selectWindow.Canvas().SetOnTypedKey(func(k *fyne.KeyEvent) {
 		if k.Name == fyne.KeyEscape {
@@ -1711,10 +1869,10 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 			g.window.Show()
 		}
 	})
-	
+
 	// Coordinate display
 	coordLabel := widget.NewLabel("Drag to select region, then click Confirm")
-	
+
 	// Buttons
 	confirmBtn := widget.NewButton("Confirm", func() {
 		if selecting && abs(endX-startX) > 5 && abs(endY-startY) > 5 {
@@ -1722,32 +1880,32 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 			imageDisplaySize := fyneImage.Size()
 			screenWidth := float32(bounds.Dx())
 			screenHeight := float32(bounds.Dy())
-			
+
 			// Calculate scale factor (ImageFillContain scales to fit inside while preserving aspect ratio)
 			scaleX := imageDisplaySize.Width / screenWidth
 			scaleY := imageDisplaySize.Height / screenHeight
 			scale := min(scaleX, scaleY) // Use smaller scale for ImageFillContain
-			
+
 			// Calculate the actual displayed image size
 			actualImageWidth := screenWidth * scale
 			actualImageHeight := screenHeight * scale
-			
+
 			// Calculate letterbox offsets (centering)
 			offsetX := (imageDisplaySize.Width - actualImageWidth) / 2
 			offsetY := (imageDisplaySize.Height - actualImageHeight) / 2
-			
+
 			// Adjust coordinates for letterboxing
 			adjustedStartX := startX - offsetX
 			adjustedStartY := startY - offsetY
 			adjustedEndX := endX - offsetX
 			adjustedEndY := endY - offsetY
-			
+
 			// Convert to screen coordinates
 			x := int(min(adjustedStartX, adjustedEndX) / scale)
 			y := int(min(adjustedStartY, adjustedEndY) / scale)
 			width := int(abs(adjustedEndX-adjustedStartX) / scale)
 			height := int(abs(adjustedEndY-adjustedStartY) / scale)
-			
+
 			// Ensure minimum size
 			if width < 10 {
 				width = 10
@@ -1755,30 +1913,30 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 			if height < 10 {
 				height = 10
 			}
-			
+
 			targetEntry.SetText(fmt.Sprintf("%d,%d,%d,%d", x, y, width, height))
 			g.addLog(fmt.Sprintf("Selected region: x=%d, y=%d, width=%d, height=%d", x, y, width, height))
-			
+
 			selectWindow.Close()
 			g.window.Show()
 		} else {
 			coordLabel.SetText("Please drag to select a larger region (minimum 5x5 pixels)")
 		}
 	})
-	
+
 	cancelBtn := widget.NewButton("Cancel", func() {
 		selectWindow.Close()
 		g.window.Show()
 	})
-	
+
 	instructionLabel := widget.NewLabel("Instructions: Click and drag on the image to select a region")
-	
+
 	bottom := container.NewVBox(
 		instructionLabel,
 		coordLabel,
 		container.NewHBox(confirmBtn, cancelBtn),
 	)
-	
+
 	// Create custom widget for handling mouse events
 	imageContainer := &regionSelectionContainer{
 		BaseWidget: widget.BaseWidget{},
@@ -1788,7 +1946,7 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 			selecting = true
 			startX = x
 			startY = y
-			
+
 			// Show and position the selection rectangle with initial size
 			selectionRect.Move(fyne.NewPos(x, y))
 			selectionRect.Resize(fyne.NewSize(5, 5))
@@ -1797,7 +1955,7 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 			selectionRect.FillColor = color.RGBA{255, 0, 0, 50}
 			selectionRect.Show()
 			selectionRect.Refresh()
-			
+
 			coordLabel.SetText(fmt.Sprintf("Mouse DOWN: x=%d, y=%d", int(x), int(y)))
 			fmt.Printf("Selection started at: %f, %f\n", x, y)
 		},
@@ -1805,13 +1963,13 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 			if selecting {
 				endX = x
 				endY = y
-				
+
 				// Update selection rectangle with red border
 				rectX := min(startX, endX)
 				rectY := min(startY, endY)
 				rectW := abs(endX - startX)
 				rectH := abs(endY - startY)
-				
+
 				// Make sure rectangle is visible with minimum size
 				if rectW < 10 {
 					rectW = 10
@@ -1819,7 +1977,7 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 				if rectH < 10 {
 					rectH = 10
 				}
-				
+
 				selectionRect.Move(fyne.NewPos(rectX, rectY))
 				selectionRect.Resize(fyne.NewSize(rectW, rectH))
 				selectionRect.StrokeColor = color.RGBA{255, 0, 0, 255}
@@ -1827,41 +1985,41 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 				selectionRect.FillColor = color.RGBA{255, 0, 0, 50}
 				selectionRect.Show()
 				selectionRect.Refresh()
-				
+
 				// Calculate actual screen coordinates
 				// Get the actual display dimensions and screen dimensions
 				imageDisplaySize := fyneImage.Size()
 				screenWidth := float32(bounds.Dx())
 				screenHeight := float32(bounds.Dy())
-				
+
 				// Calculate scale factor (ImageFillContain scales to fit inside while preserving aspect ratio)
 				scaleX := imageDisplaySize.Width / screenWidth
 				scaleY := imageDisplaySize.Height / screenHeight
 				scale := min(scaleX, scaleY) // Use smaller scale for ImageFillContain
-				
+
 				// Calculate the actual displayed image size
 				actualImageWidth := screenWidth * scale
 				actualImageHeight := screenHeight * scale
-				
+
 				// Calculate letterbox offsets (centering)
 				offsetX := (imageDisplaySize.Width - actualImageWidth) / 2
 				offsetY := (imageDisplaySize.Height - actualImageHeight) / 2
-				
+
 				// Adjust coordinates for letterboxing
 				adjustedStartX := startX - offsetX
 				adjustedStartY := startY - offsetY
 				adjustedEndX := endX - offsetX
 				adjustedEndY := endY - offsetY
-				
+
 				// Convert to screen coordinates
 				actualX := int(min(adjustedStartX, adjustedEndX) / scale)
 				actualY := int(min(adjustedStartY, adjustedEndY) / scale)
 				actualW := int(abs(adjustedEndX-adjustedStartX) / scale)
 				actualH := int(abs(adjustedEndY-adjustedStartY) / scale)
-				
-				coordLabel.SetText(fmt.Sprintf("DRAGGING: x=%d, y=%d, w=%d, h=%d", 
+
+				coordLabel.SetText(fmt.Sprintf("DRAGGING: x=%d, y=%d, w=%d, h=%d",
 					actualX, actualY, actualW, actualH))
-				fmt.Printf("Display: %fx%f, Scale: %f, Offset: %fx%f, Coords: %d,%d,%d,%d\n", 
+				fmt.Printf("Display: %fx%f, Scale: %f, Offset: %fx%f, Coords: %d,%d,%d,%d\n",
 					imageDisplaySize.Width, imageDisplaySize.Height, scale, offsetX, offsetY, actualX, actualY, actualW, actualH)
 			}
 		},
@@ -1869,50 +2027,50 @@ func (g *GUI) showRegionSelector(targetEntry *widget.Entry) {
 			if selecting {
 				endX = x
 				endY = y
-				
+
 				// Use the same calculation as onSelectionUpdate for consistency
 				imageDisplaySize := fyneImage.Size()
 				screenWidth := float32(bounds.Dx())
 				screenHeight := float32(bounds.Dy())
-				
+
 				// Calculate scale factor (ImageFillContain scales to fit inside while preserving aspect ratio)
 				scaleX := imageDisplaySize.Width / screenWidth
 				scaleY := imageDisplaySize.Height / screenHeight
 				scale := min(scaleX, scaleY) // Use smaller scale for ImageFillContain
-				
+
 				// Calculate the actual displayed image size
 				actualImageWidth := screenWidth * scale
 				actualImageHeight := screenHeight * scale
-				
+
 				// Calculate letterbox offsets (centering)
 				offsetX := (imageDisplaySize.Width - actualImageWidth) / 2
 				offsetY := (imageDisplaySize.Height - actualImageHeight) / 2
-				
+
 				// Adjust coordinates for letterboxing
 				adjustedStartX := startX - offsetX
 				adjustedStartY := startY - offsetY
 				adjustedEndX := endX - offsetX
 				adjustedEndY := endY - offsetY
-				
+
 				// Convert to screen coordinates
 				actualX := int(min(adjustedStartX, adjustedEndX) / scale)
 				actualY := int(min(adjustedStartY, adjustedEndY) / scale)
 				actualW := int(abs(adjustedEndX-adjustedStartX) / scale)
 				actualH := int(abs(adjustedEndY-adjustedStartY) / scale)
-				
-				coordLabel.SetText(fmt.Sprintf("Selected: x=%d, y=%d, w=%d, h=%d - Click Confirm to apply", 
+
+				coordLabel.SetText(fmt.Sprintf("Selected: x=%d, y=%d, w=%d, h=%d - Click Confirm to apply",
 					actualX, actualY, actualW, actualH))
 			}
 		},
 	}
 	imageContainer.ExtendBaseWidget(imageContainer)
-	
+
 	// Make the imageContainer cover the entire scroll area for mouse events
 	imageContainer.Resize(fyne.NewSize(float32(bounds.Dx()), float32(bounds.Dy())))
-	
+
 	contentWithImage := container.NewStack(scroll, imageContainer)
 	mainContent := container.NewBorder(nil, bottom, nil, nil, contentWithImage)
-	
+
 	selectWindow.SetContent(mainContent)
 	selectWindow.Show()
 }
@@ -2018,17 +2176,153 @@ func abs(a float32) float32 {
 	return a
 }
 
+func (g *GUI) openWebViewer() {
+	// Start HTTP server if not already running
+	go g.startWebServer()
+
+	// Wait a moment for server to start
+	time.Sleep(500 * time.Millisecond)
+
+	// Open browser
+	url := "http://localhost:8080"
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default: // Linux and others
+		cmd = exec.Command("xdg-open", url)
+	}
+
+	if err := cmd.Start(); err != nil {
+		g.addLog(fmt.Sprintf("Failed to open browser: %v", err))
+		dialog.ShowError(fmt.Errorf("ブラウザを開けませんでした: %v", err), g.window)
+	} else {
+		g.addLog("Web viewer opened at http://localhost:8080")
+	}
+}
+
+var serverStarted bool
+var serverMutex sync.Mutex
+
+func (g *GUI) startWebServer() {
+	serverMutex.Lock()
+	if serverStarted {
+		serverMutex.Unlock()
+		return
+	}
+	serverStarted = true
+	serverMutex.Unlock()
+
+	// Setup HTTP handlers
+	http.HandleFunc("/api/regions", func(w http.ResponseWriter, r *http.Request) {
+		// Load environment variables
+		godotenv.Load()
+		
+		regions := make(map[string]string)
+		for i := 1; i <= 6; i++ {
+			regionName := os.Getenv(fmt.Sprintf("REGION_%d_NAME", i))
+			if regionName == "" {
+				regionName = fmt.Sprintf("リージョン %d", i)
+			}
+			regions[fmt.Sprintf("%d", i)] = regionName
+		}
+		
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(regions)
+	})
+	
+	// Serve web-viewer files
+	http.Handle("/web-viewer/", http.StripPrefix("/web-viewer/", http.FileServer(http.Dir("web-viewer/"))))
+	
+	// Serve res files  
+	http.Handle("/res/", http.FileServer(http.Dir("./")))
+	
+	// Redirect root to web-viewer
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/web-viewer/", http.StatusMovedPermanently)
+		}
+	})
+
+	g.addLog("Starting web server on http://localhost:8080")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		g.addLog(fmt.Sprintf("Web server error: %v", err))
+		serverMutex.Lock()
+		serverStarted = false
+		serverMutex.Unlock()
+	}
+}
+
 func runGUI() {
 	gui := NewGUI()
 	gui.Run()
 }
 
+func runWebServer() {
+	port := os.Getenv("WEB_PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	// API endpoint for region names
+	http.HandleFunc("/api/regions", func(w http.ResponseWriter, r *http.Request) {
+		// Load environment variables
+		godotenv.Load()
+		
+		regions := make(map[string]string)
+		for i := 1; i <= 6; i++ {
+			regionName := os.Getenv(fmt.Sprintf("REGION_%d_NAME", i))
+			if regionName == "" {
+				regionName = fmt.Sprintf("リージョン %d", i)
+			}
+			regions[fmt.Sprintf("%d", i)] = regionName
+		}
+		
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(regions)
+	})
+	
+	// Serve web-viewer files
+	http.Handle("/web-viewer/", http.StripPrefix("/web-viewer/", http.FileServer(http.Dir("web-viewer/"))))
+	
+	// Serve res files  
+	http.Handle("/res/", http.FileServer(http.Dir("./")))
+	
+	// Redirect root to web-viewer
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/web-viewer/", http.StatusMovedPermanently)
+		}
+	})
+
+	fmt.Printf("Starting web server on port %s\n", port)
+	fmt.Printf("Open http://localhost:%s to view the ranking data\n", port)
+
+	err := http.ListenAndServe(":"+port, nil)
+	if err != nil {
+		log.Fatal("Failed to start web server:", err)
+	}
+}
+
 func main() {
-	// Determine GUI or CLI mode from command line arguments
-	if len(os.Args) > 1 && os.Args[1] == "--cli" {
-		// CLI mode
-		ctx := context.Background()
-		mainLoop(ctx, []int{30})
+	// Determine mode from command line arguments
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--cli":
+			// CLI mode
+			ctx := context.Background()
+			mainLoop(ctx, []int{30})
+		case "--web":
+			// Web server mode
+			runWebServer()
+		default:
+			fmt.Printf("Usage: %s [--cli|--web]\n", os.Args[0])
+			fmt.Println("  --cli: Run in CLI mode")
+			fmt.Println("  --web: Start web server")
+			fmt.Println("  (no args): Run GUI mode")
+		}
 	} else {
 		// GUI mode
 		runGUI()
