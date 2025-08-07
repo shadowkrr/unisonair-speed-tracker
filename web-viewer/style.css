@@ -1,0 +1,461 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', 'Noto Sans JP', sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    padding: 10px;
+}
+
+.container {
+    max-width: 100vw;
+    width: 100%;
+    margin: 0 auto;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+    overflow: hidden;
+}
+
+header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 30px;
+}
+
+header h1 {
+    font-size: 28px;
+    margin-bottom: 20px;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.controls {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.control-group label {
+    font-weight: 500;
+}
+
+select, input[type="text"], input[type="number"], input[type="datetime-local"] {
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 14px;
+    background: white;
+    transition: all 0.3s;
+}
+
+select:focus, input:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.btn-primary, .btn-secondary {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.btn-primary {
+    background: #667eea;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #5a67d8;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.btn-secondary {
+    background: #e2e8f0;
+    color: #4a5568;
+}
+
+.btn-secondary:hover {
+    background: #cbd5e0;
+    transform: translateY(-1px);
+}
+
+.filters {
+    padding: 25px 30px;
+    background: #f7fafc;
+    border-bottom: 1px solid #e2e8f0;
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.filter-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.filter-group label {
+    font-size: 14px;
+    color: #4a5568;
+    font-weight: 500;
+}
+
+.stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 20px;
+    padding: 20px 30px;
+    background: #f7fafc;
+}
+
+.stat-card {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.stat-card h3 {
+    font-size: 16px;
+    color: #2d3748;
+    margin-bottom: 15px;
+    border-bottom: 2px solid #667eea;
+    padding-bottom: 8px;
+}
+
+.stat-card p {
+    display: flex;
+    justify-content: space-between;
+    margin: 8px 0;
+    font-size: 14px;
+    color: #4a5568;
+}
+
+.stat-card span {
+    font-weight: 600;
+    color: #2d3748;
+}
+
+.table-controls {
+    padding: 15px 30px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: white;
+}
+
+.table-container {
+    padding: 0 30px 30px;
+    background: white;
+    position: relative;
+    overflow: auto;
+    max-width: 100%;
+    max-height: 70vh;
+}
+
+table {
+    width: 100%;
+    min-width: 2000px;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+thead {
+    background: #f7fafc;
+}
+
+th {
+    padding: 8px 4px;
+    text-align: center;
+    font-weight: 600;
+    color: #2d3748;
+    border-bottom: 2px solid #e2e8f0;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.2s;
+    min-width: 40px;
+    width: auto;
+    white-space: nowrap;
+    font-size: 11px;
+    background: #f7fafc;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+th:hover {
+    background: #edf2f7;
+}
+
+th[data-sort] {
+    position: relative;
+}
+
+tbody tr {
+    border-bottom: 1px solid #e2e8f0;
+    transition: background 0.2s;
+}
+
+tbody tr:hover {
+    background: #f7fafc;
+}
+
+td {
+    padding: 6px 4px;
+    color: #4a5568;
+    white-space: nowrap;
+    font-size: 11px;
+    text-align: center;
+}
+
+/* 固定列のスタイル */
+th:nth-child(1), th:nth-child(2), th:nth-child(3), th:nth-child(4),
+td:nth-child(1), td:nth-child(2), td:nth-child(3), td:nth-child(4) {
+    position: sticky;
+    background: white;
+    z-index: 5;
+}
+
+/* 日時列（1列目）*/
+th:nth-child(1), td:nth-child(1) {
+    left: 0;
+    min-width: 120px;
+    background: #f7fafc;
+}
+
+/* 順位列（2列目）*/
+th:nth-child(2), td:nth-child(2) {
+    left: 120px;
+    min-width: 60px;
+    text-align: center;
+    background: #f7fafc;
+}
+
+/* プレイヤー名列（3列目）*/
+th:nth-child(3), td:nth-child(3) {
+    left: 180px;
+    min-width: 150px;
+    text-align: left;
+    background: #f7fafc;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ポイント列（4列目）*/
+th:nth-child(4), td:nth-child(4) {
+    left: 330px;
+    min-width: 100px;
+    text-align: right;
+    background: #f7fafc;
+    font-weight: 600;
+}
+
+/* ヘッダーの固定列はさらに高いz-index */
+th:nth-child(1), th:nth-child(2), th:nth-child(3), th:nth-child(4) {
+    z-index: 15;
+    background: #f7fafc;
+}
+
+.rank-gold {
+    color: #f6ad55;
+    font-weight: 700;
+}
+
+.rank-silver {
+    color: #a0aec0;
+    font-weight: 600;
+}
+
+.rank-bronze {
+    color: #d69e7e;
+    font-weight: 600;
+}
+
+.points {
+    font-weight: 600;
+    color: #2d3748;
+}
+
+.positive {
+    color: #48bb78;
+    font-weight: 600;
+}
+
+.negative {
+    color: #f56565;
+    font-weight: 600;
+}
+
+.speed {
+    font-weight: 500;
+}
+
+.loading {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 18px;
+    color: #667eea;
+    font-weight: 600;
+    padding: 20px 40px;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    z-index: 100;
+}
+
+.loading::after {
+    content: '';
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    margin-left: 10px;
+    border: 3px solid #667eea;
+    border-radius: 50%;
+    border-top-color: transparent;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.hidden {
+    display: none !important;
+}
+
+.pagination {
+    padding: 20px 30px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    background: white;
+    border-top: 1px solid #e2e8f0;
+}
+
+.pagination button {
+    padding: 8px 12px;
+    border: 1px solid #e2e8f0;
+    background: white;
+    color: #4a5568;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s;
+    min-width: 36px;
+}
+
+.pagination button:hover:not(:disabled) {
+    background: #667eea;
+    color: white;
+    border-color: #667eea;
+}
+
+.pagination button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.pagination button.active {
+    background: #667eea;
+    color: white;
+    border-color: #667eea;
+    font-weight: 600;
+}
+
+.page-info {
+    margin-left: 20px;
+    color: #4a5568;
+    font-size: 14px;
+}
+
+@media (max-width: 768px) {
+    .container {
+        border-radius: 0;
+    }
+    
+    body {
+        padding: 0;
+    }
+    
+    .controls, .filters {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .control-group, .filter-group {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .stats {
+        grid-template-columns: 1fr;
+    }
+    
+    table {
+        font-size: 12px;
+    }
+    
+    th, td {
+        padding: 8px 6px;
+    }
+    
+    .table-container {
+        overflow-x: auto;
+    }
+    
+    table {
+        min-width: 1500px;
+        font-size: 10px;
+    }
+    
+    th, td {
+        padding: 4px 2px;
+        font-size: 10px;
+    }
+    
+    /* モバイルでも固定列を維持（幅を縮小） */
+    th:nth-child(1), td:nth-child(1) {
+        min-width: 90px;
+    }
+    
+    th:nth-child(2), td:nth-child(2) {
+        left: 90px;
+        min-width: 40px;
+    }
+    
+    th:nth-child(3), td:nth-child(3) {
+        left: 130px;
+        min-width: 100px;
+    }
+    
+    th:nth-child(4), td:nth-child(4) {
+        left: 230px;
+        min-width: 70px;
+    }
+}
