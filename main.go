@@ -622,6 +622,263 @@ func isRegionEnabled(regionIndex int, gui *GUI) bool {
 	}
 }
 
+type ImageMatchResult struct {
+	Found      bool               `json:"found"`
+	X          int                `json:"x"`
+	Y          int                `json:"y"`
+	Confidence float64            `json:"confidence"`
+	Region     *ImageMatchRegion  `json:"region,omitempty"`
+	Error      string             `json:"error,omitempty"`
+}
+
+type ImageMatchRegion struct {
+	Left   int `json:"left"`
+	Top    int `json:"top"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+func callImageMatcher(ctx context.Context) error {
+	// Example usage - you can modify the image path and confidence as needed
+	imagePath := "target_image.png" // Replace with actual target image path
+	confidence := 0.8
+
+	fmt.Printf("🔍 Calling image_matcher.py with image: %s\n", imagePath)
+
+	// Prepare command
+	cmd := exec.CommandContext(ctx, "python", "image_matcher.py", imagePath, fmt.Sprintf("%.2f", confidence))
+	
+	// Set up output capture
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// Execute command
+	err := cmd.Run()
+	if err != nil {
+		fmt.Printf("❌ Python script execution failed: %v\n", err)
+		if stderr.Len() > 0 {
+			fmt.Printf("stderr: %s\n", stderr.String())
+		}
+		return fmt.Errorf("image_matcher.py execution failed: %v", err)
+	}
+
+	// Parse JSON output
+	var result ImageMatchResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		fmt.Printf("❌ Failed to parse JSON output: %v\n", err)
+		fmt.Printf("Raw output: %s\n", stdout.String())
+		return fmt.Errorf("failed to parse image_matcher.py output: %v", err)
+	}
+
+	// Process result
+	if result.Found {
+		fmt.Printf("✅ Image found at coordinates: (%d, %d) with confidence: %.2f\n", result.X, result.Y, result.Confidence)
+		if result.Region != nil {
+			fmt.Printf("   Region: left=%d, top=%d, width=%d, height=%d\n", 
+				result.Region.Left, result.Region.Top, result.Region.Width, result.Region.Height)
+		}
+	} else {
+		fmt.Printf("❌ Image not found on screen\n")
+		if result.Error != "" {
+			fmt.Printf("   Error: %s\n", result.Error)
+		}
+	}
+
+	// Log stderr output for debugging
+	if stderr.Len() > 0 {
+		fmt.Printf("📝 Image matcher log: %s", stderr.String())
+	}
+
+	return nil
+}
+
+// FallbackCoords represents fallback coordinates for clicking
+type FallbackCoords struct {
+	X int
+	Y int
+}
+
+// locateAndClick attempts to find an image and click on it
+// Only clicks when the image is actually found (ignores fallback coordinates)
+func locateAndClick(ctx context.Context, imagePath, description string, fallbackCoords *FallbackCoords) (bool, error) {
+	fmt.Printf("🔍 %s探索開始: %s\n", description, imagePath)
+	
+	// Always perform image search regardless of fallback coordinates
+	// Prepare command
+	cmd := exec.CommandContext(ctx, "python", "image_matcher.py", imagePath, "0.8")
+	
+	// Set up output capture
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// Execute command
+	err := cmd.Run()
+	if err != nil {
+		fmt.Printf("❌ Python script execution failed for %s: %v\n", description, err)
+		if stderr.Len() > 0 {
+			fmt.Printf("stderr: %s\n", stderr.String())
+		}
+		return false, fmt.Errorf("image_matcher.py execution failed: %v", err)
+	}
+
+	// Parse JSON output
+	var result ImageMatchResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		fmt.Printf("❌ Failed to parse JSON output for %s: %v\n", description, err)
+		return false, fmt.Errorf("failed to parse image_matcher.py output: %v", err)
+	}
+
+	// Log stderr output for debugging
+	if stderr.Len() > 0 {
+		fmt.Printf("📝 Image matcher log for %s: %s", description, stderr.String())
+	}
+
+	// Process result - only click if image is actually found
+	if result.Found {
+		fmt.Printf("✅ %s found at coordinates: (%d, %d)\n", description, result.X, result.Y)
+		
+		// If fallback coordinates are provided, click those instead of the found image coordinates
+		if fallbackCoords != nil {
+			fmt.Printf("🎯 画像が見つかったので、フォールバック座標をクリックします: (%d, %d)\n", fallbackCoords.X, fallbackCoords.Y)
+			_, err := simulateClick(fallbackCoords.X, fallbackCoords.Y)
+			if err != nil {
+				return false, err
+			}
+		} else {
+			fmt.Printf("✅ %sクリック: %d, %d\n", description, result.X, result.Y)
+			_, err := simulateClick(result.X, result.Y)
+			if err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	} else {
+		fmt.Printf("❌ %s画像が見つかりませんでした\n", description)
+		if result.Error != "" {
+			fmt.Printf("   Error: %s\n", result.Error)
+		}
+		// Image not found - don't click anything
+		return false, nil
+	}
+}
+
+// simulateClick simulates a mouse click at the specified coordinates
+func simulateClick(x, y int) (bool, error) {
+	fmt.Printf("🖱️ Simulating click at (%d, %d)\n", x, y)
+	
+	// Use PowerShell to simulate mouse click on Windows
+	if runtime.GOOS == "windows" {
+		script := fmt.Sprintf(`
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(%d, %d)
+Start-Sleep -Milliseconds 100
+Add-Type -TypeDefinition '
+using System;
+using System.Runtime.InteropServices;
+public class Mouse {
+    [DllImport("user32.dll")]
+    public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
+    public const uint MOUSEEVENTF_LEFTDOWN = 0x02;
+    public const uint MOUSEEVENTF_LEFTUP = 0x04;
+}
+'
+[Mouse]::mouse_event([Mouse]::MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+Start-Sleep -Milliseconds 50
+[Mouse]::mouse_event([Mouse]::MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+`, x, y)
+		
+		cmd := exec.Command("powershell", "-Command", script)
+		err := cmd.Run()
+		if err != nil {
+			fmt.Printf("❌ Failed to simulate click: %v\n", err)
+			return false, err
+		}
+		fmt.Printf("✅ Click simulated successfully at (%d, %d)\n", x, y)
+		return true, nil
+	} else {
+		fmt.Printf("⚠️ Mouse simulation not implemented for %s\n", runtime.GOOS)
+		return false, fmt.Errorf("mouse simulation not supported on %s", runtime.GOOS)
+	}
+}
+
+// executeRankingSequence executes the ranking button sequence
+// Repeats all buttons until top ranking button is found and clicked
+func executeRankingSequence(ctx context.Context) error {
+	fmt.Printf("🚀 上位ランキングボタンが見つかるまでシーケンスを繰り返します...\n")
+	
+	attempt := 1
+	
+	for {
+		// Check if context is canceled
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		
+		fmt.Printf("\n=== 🔄 シーケンス試行 %d ===\n", attempt)
+		
+		time.Sleep(2 * time.Second)
+		
+		// Step 1: Click 総合ランキングボタン (Overall Ranking button) - 画像が見つかった時のみクリック
+		fmt.Printf("🔘 総合ランキングボタンを検索してクリック\n")
+		locateAndClick(ctx, "./res/image/all_ranking.png", "総合ランキングボタン", &FallbackCoords{X: 215, Y: 49})
+		
+		time.Sleep(2 * time.Second)
+		
+		// Step 2: Click ランキング報酬ボタン (Ranking Reward button) - 画像が見つかった時のみクリック
+		fmt.Printf("🔘 ランキング報酬ボタンを検索してクリック\n")
+		locateAndClick(ctx, "./res/image/reward_ranking.png", "ランキング報酬ボタン", &FallbackCoords{X: 215, Y: 49})
+		
+		time.Sleep(5 * time.Second)
+		
+		// Step 3: Click ランキングボタン (Ranking button) - 画像が見つかった時のみクリック
+		fmt.Printf("🔘 ランキングボタンを検索してクリック\n")
+		locateAndClick(ctx, "./res/image/ranking.png", "ランキングボタン", nil)
+		
+		time.Sleep(5 * time.Second)
+		
+		// Step 4: Try to click 上位ランキングボタン (Top Ranking button)
+		fmt.Printf("🎯 上位ランキングボタンを検索中...\n")
+		success, err := locateAndClick(ctx, "./res/image/top_ranking.png", "上位ランキングボタン", nil)
+		if err != nil {
+			return fmt.Errorf("failed to click 上位ランキングボタン: %v", err)
+		}
+		
+		if success {
+			fmt.Printf("✅ 上位ランキングボタンのクリックに成功！(シーケンス試行 %d) - ループから抜けます！\n", attempt)
+			break
+		}
+		
+		fmt.Printf("❌ 上位ランキングボタンが見つかりません。シーケンスを最初から繰り返します...\n")
+		attempt++
+		time.Sleep(2 * time.Second)
+	}
+	
+	time.Sleep(5 * time.Second)
+	
+	fmt.Printf("✅ Ranking sequence completed successfully\n")
+	return nil
+}
+
+// executeRankingSequenceWithRetry executes the ranking sequence
+// The top ranking button loop is now handled inside executeRankingSequence
+func executeRankingSequenceWithRetry(ctx context.Context) error {
+	fmt.Printf("🚀 ランキングシーケンスを開始します...\n")
+	
+	// Execute the ranking sequence (which includes the top button retry loop)
+	err := executeRankingSequence(ctx)
+	if err != nil {
+		fmt.Printf("❌ ランキングシーケンスでエラーが発生しました: %v\n", err)
+		return err
+	}
+	
+	fmt.Printf("🎉 ランキングシーケンスが完了しました！\n")
+	return nil
+}
+
 func worker(ctx context.Context, gui *GUI) error {
 	// Load environment variables from .env file
 	if err := godotenv.Load(); err != nil {
@@ -650,6 +907,12 @@ func worker(ctx context.Context, gui *GUI) error {
 	config, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %v", err)
+	}
+
+	// Execute ranking sequence (top ranking button loop is handled internally)
+	if err := executeRankingSequenceWithRetry(ctx); err != nil {
+		fmt.Printf("Ranking sequence failed: %v\n", err)
+		// Continue with normal screenshot processing even if ranking sequence fails
 	}
 
 	now := time.Now()
