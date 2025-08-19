@@ -903,11 +903,13 @@ func worker(ctx context.Context, gui *GUI) error {
 	}
 	defer client.Close()
 
-	// Load config
+	// Load latest config every time worker runs
 	config, err := loadConfig()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %v", err)
+		fmt.Printf("Failed to load config: %v, using empty config\n", err)
+		config = &Config{NameReplaces: make(map[string]string)}
 	}
+	fmt.Printf("📄 Loaded name-mapping config with %d replacements\n", len(config.NameReplaces))
 
 	// Execute ranking sequence (top ranking button loop is handled internally)
 	if err := executeRankingSequenceWithRetry(ctx); err != nil {
@@ -1289,6 +1291,7 @@ func (g *GUI) openConfigFile() {
 	}
 }
 
+
 func (g *GUI) openRegionFile(regionIndex, fileType, fileName string) {
 	filePath := filepath.Join("res", regionIndex, fileType, fileName)
 
@@ -1443,16 +1446,8 @@ func (g *GUI) createUI() {
 	// Load settings from .env file
 	g.loadFromEnvFile()
 
-	// Create region selection buttons
-	// Region0 is full screen - add refresh button to re-detect screen size
-	refreshBtn := widget.NewButton("更新", func() {
-		x, y, width, height := getScreenDimensions()
-		g.region0Entry.Enable()
-		g.region0Entry.SetText(fmt.Sprintf("%d,%d,%d,%d", x, y, width, height))
-		g.region0Entry.Disable()
-		g.addLog("Screen dimensions refreshed")
-	})
-	region0Container := container.NewBorder(nil, nil, nil, refreshBtn, container.NewMax(g.region0Entry))
+	// Create region containers
+	region0Container := container.NewBorder(nil, nil, nil, widget.NewButton("選択", func() { g.showRegionSelector(g.region0Entry) }), g.region0Entry)
 	region1Container := container.NewGridWithColumns(4,
 		g.region1EnableCheck,
 		g.region1NameEntry,
@@ -1718,7 +1713,7 @@ func (g *GUI) createUI() {
 	g.refreshAllRegionData()
 
 	// Layout
-	leftPanel := container.NewVBox(
+	leftPanelContent := container.NewVBox(
 		widget.NewLabel("Status"),
 		statusLabel,
 		widget.NewSeparator(),
@@ -1726,6 +1721,9 @@ func (g *GUI) createUI() {
 		widget.NewSeparator(),
 		controlsContainer,
 	)
+	
+	// Make left panel scrollable
+	leftPanel := container.NewScroll(leftPanelContent)
 
 	// Create header with label and button
 	rankingsHeader := container.NewBorder(
@@ -1737,13 +1735,16 @@ func (g *GUI) createUI() {
 		nil,
 	)
 
-	rightPanel := container.NewVBox(
+	rightPanelContent := container.NewVBox(
 		widget.NewLabel("Log"),
 		logScroll,
 		widget.NewSeparator(),
 		rankingsHeader,
 		g.regionTabs,
 	)
+	
+	// Make right panel scrollable
+	rightPanel := container.NewScroll(rightPanelContent)
 
 	content := container.NewHSplit(leftPanel, rightPanel)
 	content.SetOffset(0.5) // Set left panel to 50%
